@@ -1,0 +1,2525 @@
+{
+  "source": "Yahoo Finance chart API",
+  "constituents_source": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/b61fb6f07286/data/constituents.csv",
+  "symbols": 503,
+  "start": "2016-01-01",
+  "end": "2026-02-27",
+  "downloaded_at_utc": "2026-10-31T06:55:08.019451+00:00",
+  "results": [
+    {
+      "symbol": "A",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AAPL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ABBV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ABNB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ABT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ACGL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ACN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ADBE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ADI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ADM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ADP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ADSK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AEE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AEP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AES",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AFL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AIG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AIZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AJG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AKAM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ALB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ALGN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ALL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ALLE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMAT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMCR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AME",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMGN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AMZN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ANET",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AON",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AOS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "APA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "APD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "APH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "APO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "APTV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ARE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ATO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AVB",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/AVB?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "AVGO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AVY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AWK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AXON",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AXP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "AZO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BAC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BALL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BAX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BBY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BDX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BEN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BF.B",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BIIB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BK",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/BK?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "BKNG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BKR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BLDR",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "BLK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BMY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BRK.B",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BRO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BSX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "BXP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "C",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CAG",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "CAH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CARR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CAT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CBOE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CBRE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CCI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CCL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CDNS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CDW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CEG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CFG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CHD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CHRW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CHTR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CINF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CLX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CMCSA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CME",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CMG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CMI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CMS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CNC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CNP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COIN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "COST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CPAY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CPB",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "CPRT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CPT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CRL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CRM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CRWD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CSCO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CSGP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CSX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CTAS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CTRA",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/CTRA?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "CTSH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CTVA",
+      "status": "downloaded",
+      "rows": 1700
+    },
+    {
+      "symbol": "CVS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CVX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "CZR",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "D",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DAL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DASH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DAY",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/DAY?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "DD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DDOG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DECK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DELL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DGX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DHI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DHR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DIS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DLR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DLTR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DOC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DOV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DOW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DPZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DRI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DTE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DUK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DVA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DVN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "DXCM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EA",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/EA?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "EBAY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ECL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ED",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EFX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EIX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ELV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EMN",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "EMR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ENPH",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "EOG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EPAM",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "EQIX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EQR",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/EQR?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "EQT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ERIE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ES",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ESS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ETN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ETR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EVRG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EXC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EXE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EXPD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EXPE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "EXR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "F",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FANG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FAST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FCX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FDS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FDX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FFIV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FI",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/FI?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "FICO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FIS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FITB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FOX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FOXA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FRT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FSLR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FTNT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "FTV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GDDY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GEHC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GEN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GEV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GILD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GIS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GLW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GNRC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GOOG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GOOGL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GPC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GPN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GRMN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "GWW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HAL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HAS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HBAN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HCA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HIG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HII",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HLT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HOLX",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/HOLX?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "HON",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HPE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HPQ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HRL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HSIC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HSY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HUBB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HUM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "HWM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IBM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ICE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IDXX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IEX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IFF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "INCY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "INTC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "INTU",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "INVH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IPG",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/IPG?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "IQV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IRM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ISRG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ITW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "IVZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "J",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JBHT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JBL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JCI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JKHY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JNJ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "JPM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "K",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/K?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "KDP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KEY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KEYS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KHC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KIM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KKR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KLAC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KMB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KMI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KMX",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "KO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "KVUE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "L",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LDOS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LEN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LHX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LII",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LIN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LKQ",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "LLY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LMT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LNT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LOW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LRCX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LULU",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LUV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LVS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LW",
+      "status": "downloaded",
+      "rows": 2336
+    },
+    {
+      "symbol": "LYB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "LYV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MAA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MAR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MAS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MCD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MCHP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MCK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MCO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MDLZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MDT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MET",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "META",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MGM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MHK",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "MKC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MKTX",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "MLM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MMC",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/MMC?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "MMM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MNST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MOH",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "MOS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MPC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MPWR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MRK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MRNA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MSCI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MSFT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MSI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MTB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MTCH",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "MTD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "MU",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NCLH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NDAQ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NDSN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NEE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NEM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NFLX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NKE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NOC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NOW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NRG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NSC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NTAP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NTRS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NUE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NVDA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NVR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NWS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NWSA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "NXPI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "O",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ODFL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "OKE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "OMC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ON",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ORCL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ORLY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "OTIS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "OXY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PANW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PAYC",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "PAYX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PCAR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PCG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PEG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PEP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PFE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PFG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PGR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PHM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PKG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PLD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PLTR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PNC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PNR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PNW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PODD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "POOL",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "PPG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PPL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PRU",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PSA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PSKY",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/PSKY?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "PSX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PTC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PWR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "PYPL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "QCOM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RCL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "REG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "REGN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RJF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RMD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ROK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ROL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ROP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ROST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RSG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RTX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "RVTY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SBAC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SBUX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SCHW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SHW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SJM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SLB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SMCI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SNA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SNPS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SOLV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SPG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SPGI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SRE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "STE",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "STLD",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "STT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "STX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "STZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SWK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SWKS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SYF",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SYK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "SYY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "T",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TAP",
+      "status": "downloaded",
+      "rows": 2553
+    },
+    {
+      "symbol": "TDG",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TDY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TECH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TEL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TER",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TFC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TGT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TJX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TKO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TMO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TMUS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TPL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TPR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TRGP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TRMB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TROW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TRV",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TSCO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TSLA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TSN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TTD",
+      "status": "downloaded",
+      "rows": 2372
+    },
+    {
+      "symbol": "TTWO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TXN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TXT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "TYL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UAL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UBER",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UDR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UHS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ULTA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UNH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UNP",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "UPS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "URI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "USB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "V",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VICI",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VLO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VLTO",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VMC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VRSK",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VRSN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VRTX",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VTR",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VTRS",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "VZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WAB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WAT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WBA",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/WBA?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 404: Not Found"
+    },
+    {
+      "symbol": "WBD",
+      "status": "failed",
+      "error": "failed to download https://query1.finance.yahoo.com/v8/finance/chart/WBD?period1=1451606400&period2=1772236800&interval=1d&events=history&includeAdjustedClose=true: HTTP Error 400: Bad Request"
+    },
+    {
+      "symbol": "WDAY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WDC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WEC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WELL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WFC",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WMB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WMT",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WRB",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WSM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WST",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WTW",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WY",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "WYNN",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "XEL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "XOM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "XYL",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "XYZ",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "YUM",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ZBH",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ZBRA",
+      "status": "exists",
+      "rows": null
+    },
+    {
+      "symbol": "ZTS",
+      "status": "exists",
+      "rows": null
+    }
+  ]
+}

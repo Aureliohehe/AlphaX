@@ -1,0 +1,47 @@
+# Paper source files
+*.pdf
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Downloaded and generated market data (large files)
+/quant-method/machine-learn/data/raw/*
+!/quant-method/machine-learn/data/raw/sp500_constituents.csv
+!/quant-method/machine-learn/data/raw/sp500/
+/quant-method/machine-learn/data/raw/sp500/*.csv
+!/quant-method/machine-learn/data/raw/sp500/manifest.json
+/quant-method/machine-learn/data/processed/*
+!/quant-method/machine-learn/data/processed/.gitkeep
+/quant-method/machine-learn/data/qlib/
+
+# Model artifacts, experiment outputs, logs
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.bin
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.log
+
+# Temporary and local files
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
