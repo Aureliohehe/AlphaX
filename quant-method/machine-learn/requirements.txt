@@ -1,0 +1,5 @@
+# Qlib XGBoost baseline
+pyqlib
+xgboost
+numpy
+pandas

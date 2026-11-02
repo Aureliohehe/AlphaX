@@ -49,3 +49,29 @@ python3 build_features.py
 - 成交量：成交量变化、相对 20 日均量、成交量波动率
 
 指标只使用当日及之前的数据；标签使用下一交易日数据。前 120 个交易日作为指标预热期，不进入训练/验证/回测样本。
+
+## Qlib + XGBoost 基线
+
+当前基线暂时只使用价格量技术特征，不接入基本面和新闻数据。训练脚本使用 Qlib 的 `DatasetH` 和 `XGBModel`，以 36 个特征预测 `target_1d`（下一交易日复权收益），其中显式加入 `one_day_reversal = -return_1d`。训练时默认使用 Qlib 的 `CSRankNorm` 对特征和标签分别做逐日横截面 RankNorm，评估时恢复使用原始收益；同时将一日反转因子作为简单基线。可通过 `--feature-transform none` 关闭特征归一化：
+
+已有 `tradingagents` conda 环境时直接运行：
+
+```bash
+conda run -n tradingagents python train_xgboost_qlib.py
+```
+
+当前冻结的默认配置来自验证集 Rank IC 实验：`reg:pseudohubererror`、25 棵树。完整的损失函数、树轮数、特征消融和滚动验证实验可运行：
+
+```bash
+conda run -n tradingagents python run_xgb_experiments.py
+```
+
+实验记录位于 `XGB_EXPERIMENTS.md`、`XGB_RANK_EXPERIMENT.md`、`XGB_BLEND_EXPERIMENT.md`、`XGB_5D_EXPERIMENT.md` 和 `MARKET_STATE_EXPERIMENT.md`；详细机器结果位于对应的 `data/qlib/` 实验目录。
+
+如果环境尚未安装依赖，再执行：
+
+```bash
+conda run -n tradingagents python -m pip install -r requirements.txt
+```
+
+默认时间切分为：训练集 2016–2022，验证集 2023，回测集 2024-01-02–2026-02-27。当前默认使用较浅树、较高 `min_child_weight`、子采样、列采样和 L2 正则来抑制过拟合。预测结果、`feature_importance.csv`（weight/gain/cover/total_gain/total_cover）、每日 IC、Rank IC、Rank ICIR、Top/Bottom 十分位组合收益，以及简单因子基线对比写入 `data/qlib/xgboost_baseline/`。该目录及生成文件不纳入 Git。
