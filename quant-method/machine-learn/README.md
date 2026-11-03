@@ -75,3 +75,11 @@ conda run -n tradingagents python -m pip install -r requirements.txt
 ```
 
 默认时间切分为：训练集 2016–2022，验证集 2023，回测集 2024-01-02–2026-02-27。当前默认使用较浅树、较高 `min_child_weight`、子采样、列采样和 L2 正则来抑制过拟合。预测结果、`feature_importance.csv`（weight/gain/cover/total_gain/total_cover）、每日 IC、Rank IC、Rank ICIR、Top/Bottom 十分位组合收益，以及简单因子基线对比写入 `data/qlib/xgboost_baseline/`。该目录及生成文件不纳入 Git。
+
+生成论文风格的诊断图（累计 Top/Bottom 收益差、60 日滚动 Rank IC、特征 Gain 重要性）：
+
+```bash
+python3 plot_xgb_results.py
+```
+
+图片输出到 `data/qlib/xgboost_baseline/figures/xgb_baseline_paper_figure.{png,pdf}`。
