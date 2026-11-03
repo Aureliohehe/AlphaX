@@ -83,3 +83,58 @@ python3 plot_xgb_results.py
 ```
 
 图片输出到 `data/qlib/xgboost_baseline/figures/xgb_baseline_paper_figure.{png,pdf}`。
+
+## Qlib 真实组合回测
+
+在 `tradingagents` conda 环境中运行 Qlib 的 `Exchange`、`SimulatorExecutor` 和
+`TopkDropoutStrategy`：
+
+```bash
+conda run -n tradingagents python qlib_portfolio_backtest.py \
+  --n-drop 10 \
+  --output-dir data/qlib/portfolio_backtest_model_drop10
+```
+
+脚本首次运行会把调整后的 S&P 500 OHLCV 转换为本地 Qlib provider，之后复用：
+`data/qlib/sp500_provider/`。默认使用 2024-01-02–2026-02-26、50 只股票、每天最多替换 10 只，信号在 T 日生成并于 T+1 日开盘成交，包含买入/卖出费率和冲击成本。
+
+可用一日反转基线对比：
+
+```bash
+conda run -n tradingagents python qlib_portfolio_backtest.py \
+  --signal-column one_day_reversal \
+  --n-drop 10 \
+  --output-dir data/qlib/portfolio_backtest_reversal_drop10
+```
+
+输出包括 `portfolio_report.csv`、`summary.json` 和 `positions.pkl`。
+
+当前 `drop10` 回测结果（2024-01-02–2026-02-26，540 个交易日）：
+
+| 信号 | 累计收益 | 年化收益 | Sharpe | 最大回撤 | 相对等权基准 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| XGBoost prediction（close-to-close 标签） | 28.55% | 12.44% | 0.72 | -18.62% | -11.69 个百分点 |
+| XGBoost prediction（open-to-close 标签） | 35.12% | 15.08% | 1.04 | -15.92% | -5.13 个百分点 |
+| Miner-lite 7 因子 composite | 26.53% | 11.61% | 0.61 | -24.91% | -13.72 个百分点 |
+| one-day reversal | 40.36% | 17.14% | 0.90 | -22.09% | +0.11 个百分点 |
+| 等权 S&P 500 provider 基准 | 40.25% | 17.10% | — | — | — |
+
+回测审计结论：信号严格使用 T 日收盘前可得数据，Qlib 策略读取 T 日信号并在 T+1 日开盘交易，没有使用未来价格；首日基准也改为开盘到收盘，避免与组合的入场时点错位。组合包含买卖费率 5bp、冲击成本 5bp，`summary.json` 的风险统计包含首个交易日。
+
+当前默认模型的标签 `target_1d` 仍是复权收盘到下一交易日收盘收益，而组合在下一交易日开盘成交。因此它是无前视但标签—执行时点不完全匹配的保守结果。已补充 `target_open_close` 实验：
+
+```bash
+conda run -n tradingagents python train_xgboost_qlib.py \
+  --label-column target_open_close \
+  --output-dir data/qlib/xgboost_open_close
+conda run -n tradingagents python qlib_portfolio_backtest.py \
+  --predictions data/qlib/xgboost_open_close/predictions.csv \
+  --n-drop 10 \
+  --output-dir data/qlib/portfolio_backtest_open_close_drop10
+```
+
+时点匹配后模型的 Sharpe 提升至 1.04，但累计收益 35.12% 仍低于等权基准和一日反转，暂不替换默认模型。
+
+## 前推验证
+
+已对 `target_open_close` XGBoost 做 2021、2022、2023 三个前推年度验证，并保留 2024–2026 作为最终留出集。模型只有 2021 年跑赢等权基准，2022、2023 和最终留出集均未跑赢，详情见 [`WALK_FORWARD_EXPERIMENT.md`](WALK_FORWARD_EXPERIMENT.md)。因此后续不在留出集上继续调参，而应做时间滚动的 Miner 因子准入和信号融合。

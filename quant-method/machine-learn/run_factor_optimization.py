@@ -19,7 +19,7 @@ import pandas as pd
 
 EVAL_YEARS = (2021, 2022, 2023)
 TOP_K = (1, 2, 4, 8, 12)
-FEATURE_EXCLUDE = {"date", "ticker", "target_1d", "split"}
+FEATURE_EXCLUDE = {"date", "ticker", "target_1d", "target_open_close", "split"}
 # ``one_day_reversal`` is exactly ``-return_1d``.  Exclude both from the
 # candidate pool so the screen measures incremental information beyond the
 # simple reversal baseline rather than counting the same factor twice.

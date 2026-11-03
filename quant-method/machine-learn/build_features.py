@@ -3,7 +3,9 @@
 
 Every indicator is calculated independently within one ticker.  A row dated t
 uses data available through t and its target is the adjusted-close return from
-t to t+1.  The output is a panel suitable for the XGBoost baseline.
+t to t+1.  The output is a panel suitable for the XGBoost baseline.  It stores both the
+next-close return used by the original baseline and an open-to-close target for
+signals executed at the next day's open.
 """
 
 from __future__ import annotations
@@ -104,6 +106,9 @@ def add_features(frame: pd.DataFrame) -> pd.DataFrame:
         features[column] = features[column].replace([np.inf, -np.inf], np.nan)
     result = pd.concat([frame[["date", "ticker"]], features], axis=1)
     result["target_1d"] = close.shift(-1) / close - 1
+    # This target matches the portfolio convention: signal at T close,
+    # execution at T+1 open, and valuation at T+1 close.
+    result["target_open_close"] = close.shift(-1) / open_.shift(-1) - 1
     return result
 
 
@@ -148,8 +153,11 @@ def main() -> None:
                 frame = pd.read_csv(path, parse_dates=["date"])
                 result = add_features(frame)
                 if not feature_columns:
-                    feature_columns = [c for c in result.columns if c not in ("date", "ticker", "target_1d")]
-                result = result.dropna(subset=feature_columns + ["target_1d"]).copy()
+                    feature_columns = [
+                        c for c in result.columns
+                        if c not in ("date", "ticker", "target_1d", "target_open_close")
+                    ]
+                result = result.dropna(subset=feature_columns + ["target_1d", "target_open_close"]).copy()
                 result["split"] = split_name(result["date"])
                 result = result[result["split"] != "excluded"]
                 result.to_csv(text_output, index=False, header=not wrote_header)

@@ -25,7 +25,7 @@ import pandas as pd
 
 
 BASELINE_FEATURES = {"return_1d", "one_day_reversal"}
-META_COLUMNS = {"date", "ticker", "target_1d", "split"}
+META_COLUMNS = {"date", "ticker", "target_1d", "target_open_close", "split"}
 ALLOWED_OPS = {"feature", "difference", "sum"}
 
 # Related features are paired only within a family.  This keeps the first
@@ -311,6 +311,33 @@ def metric_dict(metric: Metric) -> Dict[str, float]:
     return asdict(metric)
 
 
+def build_accepted_signal(
+    frame: pd.DataFrame, ranked: pd.DataFrame, accepted: Sequence[Dict[str, object]]
+) -> pd.DataFrame:
+    """Build an equal-weight composite from validation-approved factors."""
+    if not accepted:
+        raise ValueError("Cannot build a Miner-lite signal without accepted factors")
+    scores = []
+    for factor in accepted:
+        candidate = Candidate(
+            candidate_id=str(factor["candidate_id"]),
+            op=str(factor["op"]),
+            features=tuple(str(value) for value in factor["features"]),
+            hypothesis=str(factor.get("hypothesis", "")),
+        )
+        direction = int(factor["direction"])
+        scores.append(direction * evaluate_candidate_score(candidate, ranked))
+    composite = pd.concat(scores, axis=1).mean(axis=1).rename("prediction")
+    signal = pd.DataFrame(
+        {
+            "datetime": frame["date"].to_numpy(),
+            "instrument": frame["ticker"].to_numpy(),
+            "prediction": composite.to_numpy(dtype=float),
+        }
+    )
+    return signal.sort_values(["datetime", "instrument"]).reset_index(drop=True)
+
+
 def main() -> None:
     base = Path(__file__).resolve().parents[1] / "machine-learn"
     parser = argparse.ArgumentParser(description="Run the deterministic Miner-lite harness")
@@ -418,6 +445,8 @@ def main() -> None:
         "backtest": metric_dict(evaluate_score(dates, baseline, target, backtest_mask)),
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    signal = build_accepted_signal(frame, ranked, accepted)
+    signal.to_csv(args.output_dir / "predictions.csv", index=False)
     candidate_payload = []
     for candidate in candidates:
         payload = asdict(candidate)
@@ -441,6 +470,11 @@ def main() -> None:
                 "input": str(args.input),
                 "candidate_count": len(candidates),
                 "accepted_count": len(accepted),
+                "signal": {
+                    "file": "predictions.csv",
+                    "construction": "equal-weight mean of direction-adjusted accepted factor scores",
+                    "execution": "T close signal, T+1 open trade",
+                },
                 "selection": {
                     "train_end": "2022-12-30",
                     "validation": "2023",

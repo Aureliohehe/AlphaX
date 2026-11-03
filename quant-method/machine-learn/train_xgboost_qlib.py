@@ -3,8 +3,9 @@
 
 The input is the panel produced by ``build_features.py``.  Qlib's model and
 DatasetH interfaces are used, while the small in-memory handler keeps the
-experiment independent of Qlib's binary provider format.  The label is the
-next-trading-day adjusted-close return (``target_1d``).
+experiment independent of Qlib's binary provider format.  The label defaults
+to the next-trading-day adjusted-close return (``target_1d``), and can be set
+to ``target_open_close`` for next-open execution.
 """
 
 from __future__ import annotations
@@ -65,22 +66,27 @@ class FeatureFrameHandler:
         return frame.copy()
 
 
-def load_frame(path: Path) -> tuple[pd.DataFrame, list[str]]:
+def load_frame(path: Path, label_column: str = "target_1d") -> tuple[pd.DataFrame, list[str]]:
     frame = pd.read_csv(path, compression="infer", parse_dates=["date"])
-    required = {"date", "ticker", "target_1d", "split"}
+    required = {"date", "ticker", label_column, "split"}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    # Make the simple one-day reversal signal explicit in the feature pool.
-    # It is mathematically equivalent to -return_1d and uses no future data.
+    # Make simple, information-available reversal signals explicit in the
+    # feature pool.  The open-to-close version matches next-open execution.
     frame["one_day_reversal"] = -frame["return_1d"]
+    frame["open_to_close_reversal"] = -frame["open_close_return"]
+    target_columns = {"target_1d", "target_open_close"}
     feature_columns = [
         column
         for column in frame.columns
-        if column not in {"date", "ticker", "target_1d", "split"}
+        if (
+            column not in {"date", "ticker", "split"} | target_columns
+            and (column != "open_to_close_reversal" or label_column == "target_open_close")
+        )
     ]
-    frame = frame.dropna(subset=feature_columns + ["target_1d"]).copy()
+    frame = frame.dropna(subset=feature_columns + [label_column]).copy()
     frame["datetime"] = frame["date"]
     frame["instrument"] = frame["ticker"]
     frame = frame.set_index(["datetime", "instrument"]).sort_index()
@@ -89,7 +95,7 @@ def load_frame(path: Path) -> tuple[pd.DataFrame, list[str]]:
     grouped = pd.concat(
         [
             frame[feature_columns].rename(columns={c: ("feature", c) for c in feature_columns}),
-            frame[["target_1d"]].rename(columns={"target_1d": ("label", "target_1d")}),
+            frame[[label_column]].rename(columns={label_column: ("label", label_column)}),
         ],
         axis=1,
     )
@@ -185,8 +191,10 @@ def apply_label_transform(frame: pd.DataFrame) -> pd.DataFrame:
     return CSRankNorm(fields_group="label")(frame.copy())
 
 
-def select_segment(frame: pd.DataFrame, split: str) -> pd.DataFrame:
-    start, end = SPLITS[split]
+def select_segment(
+    frame: pd.DataFrame, split: str, segments: Dict[str, tuple] = SPLITS
+) -> pd.DataFrame:
+    start, end = segments[split]
     dates = frame.index.get_level_values("datetime")
     return frame[(dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))]
 
@@ -246,6 +254,18 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "data" / "qlib" / "xgboost_baseline",
     )
     parser.add_argument(
+        "--label-column",
+        choices=["target_1d", "target_open_close"],
+        default="target_1d",
+        help="Training target; target_open_close matches next-day open execution",
+    )
+    parser.add_argument("--train-start", default=SPLITS["train"][0])
+    parser.add_argument("--train-end", default=SPLITS["train"][1])
+    parser.add_argument("--valid-start", default=SPLITS["valid"][0])
+    parser.add_argument("--valid-end", default=SPLITS["valid"][1])
+    parser.add_argument("--backtest-start", default=SPLITS["backtest"][0])
+    parser.add_argument("--backtest-end", default=SPLITS["backtest"][1])
+    parser.add_argument(
         "--objective",
         choices=["reg:squarederror", "reg:pseudohubererror", "reg:absoluteerror"],
         default="reg:pseudohubererror",
@@ -266,11 +286,16 @@ def main() -> None:
         "--feature-transform", choices=["cs_rank", "none"], default="cs_rank"
     )
     args = parser.parse_args()
+    segments = {
+        "train": (args.train_start, args.train_end),
+        "valid": (args.valid_start, args.valid_end),
+        "backtest": (args.backtest_start, args.backtest_end),
+    }
 
-    raw_frame, feature_columns = load_frame(args.input)
+    raw_frame, feature_columns = load_frame(args.input, args.label_column)
     transformed_frame = apply_feature_transform(raw_frame, args.feature_transform)
     train_frame = apply_label_transform(transformed_frame)
-    dataset = prepare_dataset(train_frame)
+    dataset = prepare_dataset(train_frame, segments=segments)
 
     try:
         from qlib.contrib.model.xgboost import XGBModel
@@ -305,11 +330,11 @@ def main() -> None:
     metrics: Dict[str, Any] = {
         "input": str(args.input),
         "features": feature_columns,
-        "label": "target_1d",
+        "label": args.label_column,
         "feature_transform": args.feature_transform,
         "training_label_transform": "Qlib CSRankNorm (cross-sectional, per date)",
-        "evaluation_label": "raw target_1d return",
-        "splits": SPLITS,
+        "evaluation_label": f"raw {args.label_column} return",
+        "splits": segments,
         "model": {
             "objective": args.objective,
             "n_estimators": args.n_estimators,
@@ -327,20 +352,23 @@ def main() -> None:
         },
         "evaluation": {},
     }
-    # Evaluate model scores against the original, unnormalized next-day return.
-    # The one-day reversal factor is a deliberately simple, transparent baseline.
-    baseline_scores = raw_frame[("feature", "one_day_reversal")].rename("one_day_reversal")
+    # Evaluate model scores against the original, unnormalized return. Match
+    # the simple baseline to the chosen execution/label convention.
+    baseline_column = (
+        "one_day_reversal" if args.label_column == "target_1d" else "open_to_close_reversal"
+    )
+    baseline_scores = raw_frame[("feature", baseline_column)].rename(baseline_column)
     prediction_frames = []
     metrics["baselines"] = {}
     for split in ("train", "valid", "backtest"):
         prediction = as_series(model.predict(dataset, segment=split), "prediction")
-        raw_segment = select_segment(raw_frame, split)
-        label = as_series(raw_segment[[("label", "target_1d")]], "label")
+        raw_segment = select_segment(raw_frame, split, segments)
+        label = as_series(raw_segment[[("label", args.label_column)]], "label")
         baseline = baseline_scores.loc[label.index]
         result_name = "validation" if split == "valid" else split
         joined = pd.concat([label, prediction, baseline], axis=1).dropna()
         metrics["evaluation"][result_name] = evaluate(label, prediction)
-        metrics["baselines"].setdefault("one_day_reversal", {})[result_name] = evaluate(
+        metrics["baselines"].setdefault(baseline_column, {})[result_name] = evaluate(
             label, baseline, include_regression_metrics=True
         )
         output = joined.reset_index()
