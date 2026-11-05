@@ -143,7 +143,15 @@ python3 quant-method/alphacrafter/screener_lite.py \
   --llm-regime-model deepseek-chat
 ```
 
-当前 LLM regime 结果只写入 `regime.csv` 和 `registry.json`，尚未参与因子过滤；下一步再加入语义 relevance judge，避免一次引入多个变量。
+当前 LLM regime 结果只写入 `regime.csv` 和 `registry.json`。语义 relevance Tool Calling `judge_factor_relevance` 已接入最新信号日的筛选循环：输入 regime 和因子 AST，返回 `relevant`、`confidence`、`reason`。历史日期仍使用确定性筛选，避免回测期间产生大量 API 调用。
+
+```bash
+python3 quant-method/alphacrafter/screener_lite.py \
+  --factor-library quant-method/machine-learn/data/qlib/alphacrafter_miner_persistent/factor_library.json \
+  --llm-regime-model deepseek-chat \
+  --llm-relevance-model deepseek-chat \
+  --llm-similarity-model deepseek-chat
+```
 
 滚动因子准入可运行：
 

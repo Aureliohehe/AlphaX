@@ -488,6 +488,55 @@ Point-in-time market context: {market_context}
     return candidates
 
 
+def _deepseek_tool_call(
+    messages: List[Dict[str, object]],
+    model: str,
+    tool: Dict[str, object],
+) -> Dict[str, object]:
+    """Call DeepSeek and return validated JSON arguments from one tool call."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise SystemExit("DeepSeek tool calling requires DEEPSEEK_API_KEY")
+    base_url = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+    request_payload = {
+        "model": model,
+        "messages": messages,
+        "tools": [tool],
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": tool["function"]["name"]},
+        },
+        "max_tokens": 1000,
+    }
+    request = Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=120) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"DeepSeek tool API returned HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Could not reach DeepSeek tool API: {exc.reason}") from exc
+
+    try:
+        tool_calls = payload["choices"][0]["message"]["tool_calls"]
+        arguments = tool_calls[0]["function"]["arguments"]
+        result = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("DeepSeek response did not contain valid tool arguments") from exc
+    if not isinstance(result, dict):
+        raise ValueError("DeepSeek tool arguments must be a JSON object")
+    return result
+
+
 def _deepseek_completion(messages: List[Dict[str, str]], model: str) -> str:
     """Call DeepSeek's OpenAI-compatible endpoint without exposing the API key."""
     api_key = os.environ.get("DEEPSEEK_API_KEY")

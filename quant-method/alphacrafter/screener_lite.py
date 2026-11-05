@@ -34,6 +34,7 @@ from miner_lite import (
     META_COLUMNS,
     Candidate,
     _deepseek_completion,
+    _deepseek_tool_call,
     candidate_from_factor,
     evaluate_candidate_score,
 )
@@ -128,6 +129,123 @@ def market_regime(frame: pd.DataFrame, date: pd.Timestamp) -> Dict[str, object]:
     }
 
 
+FACTOR_RELEVANCE_TOOL: Dict[str, object] = {
+    "type": "function",
+    "function": {
+        "name": "judge_factor_relevance",
+        "description": "Judge whether a factor is relevant to the supplied market regime.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "relevant": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["relevant", "confidence", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def judge_factor_relevance_with_tool(
+    candidate: Candidate, regime: Dict[str, object], model: str
+) -> Dict[str, object]:
+    """Use one typed tool call to judge a factor; selection is not changed yet."""
+    model_name = model.split("/", 1)[1] if model.startswith("deepseek/") else model
+    if model_name not in {"deepseek-chat", "deepseek-reasoner"}:
+        raise ValueError("Factor relevance tool currently supports DeepSeek models only")
+    messages: List[Dict[str, object]] = [
+        {
+            "role": "system",
+            "content": (
+                "You are a factor relevance judge. Use only the supplied regime and factor "
+                "description. Do not calculate returns or make a trade decision."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "regime": regime,
+                    "factor_id": candidate.candidate_id,
+                    "factor_expression": candidate.expression,
+                    "features": list(candidate.features),
+                    "hypothesis": candidate.hypothesis,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    result = _deepseek_tool_call(messages, model_name, FACTOR_RELEVANCE_TOOL)
+    if not isinstance(result.get("relevant"), bool):
+        raise ValueError("Tool result 'relevant' must be boolean")
+    confidence = float(result.get("confidence", -1))
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("Tool result confidence must be between 0 and 1")
+    reason = result.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Tool result reason must be non-empty text")
+    return {"relevant": result["relevant"], "confidence": confidence, "reason": reason}
+
+
+FACTOR_SIMILARITY_TOOL: Dict[str, object] = {
+    "type": "function",
+    "function": {
+        "name": "judge_factor_similarity",
+        "description": "Judge semantic redundancy between two factor expressions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "similarity": {"type": "number", "minimum": 0, "maximum": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["similarity", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def judge_factor_similarity_with_tool(
+    left: Candidate, right: Candidate, model: str
+) -> Dict[str, object]:
+    """Use one typed tool call to assess semantic redundancy."""
+    model_name = model.split("/", 1)[1] if model.startswith("deepseek/") else model
+    if model_name not in {"deepseek-chat", "deepseek-reasoner"}:
+        raise ValueError("Factor similarity tool currently supports DeepSeek models only")
+    result = _deepseek_tool_call(
+        [
+            {
+                "role": "system",
+                "content": "Compare factor semantics only. Do not use returns or make a trade decision.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "factor_a": {"expression": left.expression, "features": list(left.features)},
+                        "factor_b": {"expression": right.expression, "features": list(right.features)},
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        model_name,
+        FACTOR_SIMILARITY_TOOL,
+    )
+    try:
+        similarity = float(result.get("similarity", -1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Tool result similarity must be numeric") from exc
+    if not 0.0 <= similarity <= 1.0:
+        raise ValueError("Tool result similarity must be between 0 and 1")
+    reason = result.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Tool result reason must be non-empty text")
+    return {"similarity": similarity, "reason": reason}
+
+
 def assess_regime_with_llm(
     frame: pd.DataFrame, date: pd.Timestamp, model: str
 ) -> Dict[str, object]:
@@ -192,6 +310,8 @@ def select_ensemble(
     min_suitability: float,
     similarity_threshold: float,
     max_factors: int,
+    relevance: Optional[Dict[str, Dict[str, object]]] = None,
+    semantic_similarity: Optional[Dict[Tuple[str, str], Dict[str, object]]] = None,
 ) -> List[Dict[str, object]]:
     position = list(dates).index(date)
     previous_dates = list(dates[max(0, position - min_history_days) : position])
@@ -200,6 +320,10 @@ def select_ensemble(
 
     scored = []
     for candidate_id, ics in daily_ics.items():
+        if relevance is not None:
+            relevance_result = relevance.get(candidate_id)
+            if relevance_result is not None and not bool(relevance_result["relevant"]):
+                continue
         trailing = ics.reindex(previous_dates).dropna()
         if len(trailing) < min_history_days:
             continue
@@ -211,10 +335,15 @@ def select_ensemble(
     selected: List[Tuple[str, float]] = []
     for candidate_id, suitability in scored:
         candidate = candidates[candidate_id]
-        if any(
-            expression_similarity(candidate, candidates[selected_id]) >= similarity_threshold
-            for selected_id, _ in selected
-        ):
+        def is_redundant(selected_id: str) -> bool:
+            pair = tuple(sorted((candidate_id, selected_id)))
+            if semantic_similarity is not None and pair in semantic_similarity:
+                similarity = float(semantic_similarity[pair]["similarity"])
+            else:
+                similarity = expression_similarity(candidate, candidates[selected_id])
+            return similarity >= similarity_threshold
+
+        if any(is_redundant(selected_id) for selected_id, _ in selected):
             continue
         selected.append((candidate_id, suitability))
         if len(selected) >= max_factors:
@@ -263,6 +392,16 @@ def main() -> None:
         default=None,
         help="Optional DeepSeek model for one latest-date regime diagnosis",
     )
+    parser.add_argument(
+        "--llm-relevance-model",
+        default=None,
+        help="Optional DeepSeek model for latest-date factor relevance tool calls",
+    )
+    parser.add_argument(
+        "--llm-similarity-model",
+        default=None,
+        help="Optional DeepSeek model for latest-date factor similarity tool calls",
+    )
     args = parser.parse_args()
     if args.lookback_days < 1 or args.max_factors < 1:
         parser.error("lookback and max-factors must be positive")
@@ -286,11 +425,26 @@ def main() -> None:
         raise SystemExit("No valid active factors found in the factor library")
 
     latest_llm_regime: Optional[Dict[str, object]] = None
+    latest_deterministic_regime = market_regime(frame, dates[-1])
     if args.llm_regime_model:
         try:
             latest_llm_regime = assess_regime_with_llm(frame, dates[-1], args.llm_regime_model)
         except (ValueError, RuntimeError, SystemExit) as exc:
             raise SystemExit(f"LLM regime judge failed: {exc}") from exc
+
+    latest_relevance: Optional[Dict[str, Dict[str, object]]] = None
+    if args.llm_relevance_model:
+        relevance_regime = latest_llm_regime or latest_deterministic_regime
+        latest_relevance = {}
+        for candidate_id, candidate in candidates.items():
+            try:
+                latest_relevance[candidate_id] = judge_factor_relevance_with_tool(
+                    candidate, relevance_regime, args.llm_relevance_model
+                )
+            except (ValueError, RuntimeError, SystemExit) as exc:
+                raise SystemExit(
+                    f"LLM relevance judge failed for {candidate_id}: {exc}"
+                ) from exc
 
     scores: Dict[str, pd.Series] = {}
     rank_scores: Dict[str, pd.Series] = {}
@@ -300,6 +454,21 @@ def main() -> None:
         scores[candidate_id] = score
         rank_scores[candidate_id] = cross_section_rank(score, frame["date"])
         daily_ics[candidate_id] = daily_rank_ic(frame["date"], score, frame["target_1d"])
+
+    latest_similarity: Optional[Dict[Tuple[str, str], Dict[str, object]]] = None
+    if args.llm_similarity_model:
+        latest_similarity = {}
+        candidate_items = list(candidates.items())
+        for left_index, (left_id, left_candidate) in enumerate(candidate_items):
+            for right_id, right_candidate in candidate_items[left_index + 1 :]:
+                try:
+                    latest_similarity[tuple(sorted((left_id, right_id)))] = judge_factor_similarity_with_tool(
+                        left_candidate, right_candidate, args.llm_similarity_model
+                    )
+                except (ValueError, RuntimeError, SystemExit) as exc:
+                    raise SystemExit(
+                        f"LLM similarity judge failed for {left_id}/{right_id}: {exc}"
+                    ) from exc
 
     predictions = pd.Series(np.nan, index=frame.index, dtype=float)
     selection_rows: List[Dict[str, object]] = []
@@ -315,6 +484,8 @@ def main() -> None:
             args.min_suitability,
             args.similarity_threshold,
             args.max_factors,
+            latest_relevance if date == dates[-1] else None,
+            latest_similarity if date == dates[-1] else None,
         )
         regime = market_regime(frame, date)
         regime["regime_source"] = "deterministic"
@@ -334,7 +505,16 @@ def main() -> None:
         selected_days += 1
         day_mask = frame["date"] == date
         for factor in ensemble:
-            selection_rows.append({"date": str(date.date()), **factor, **regime})
+            factor_row = {"date": str(date.date()), **factor, **regime}
+            if latest_relevance is not None and date == dates[-1]:
+                factor_row.update(
+                    {
+                        "llm_relevant": latest_relevance[factor["candidate_id"]]["relevant"],
+                        "llm_relevance_confidence": latest_relevance[factor["candidate_id"]]["confidence"],
+                        "llm_relevance_reason": latest_relevance[factor["candidate_id"]]["reason"],
+                    }
+                )
+            selection_rows.append(factor_row)
             predictions.loc[day_mask] = predictions.loc[day_mask].fillna(0.0) + factor["weight"] * factor["direction"] * rank_scores[factor["candidate_id"]].loc[day_mask]
 
     signal = pd.DataFrame(
@@ -361,7 +541,16 @@ def main() -> None:
         "max_factors": args.max_factors,
         "llm_regime_model": args.llm_regime_model,
         "llm_regime_scope": "latest available signal date only" if args.llm_regime_model else None,
-        "semantic_filter": "deterministic expression/feature similarity",
+        "llm_relevance_model": args.llm_relevance_model,
+        "llm_relevance_scope": "latest available signal date only" if args.llm_relevance_model else None,
+        "llm_similarity_model": args.llm_similarity_model,
+        "llm_similarity_scope": "latest available signal date only" if args.llm_similarity_model else None,
+        "llm_similarity_pairs": (
+            {"|||".join(pair): result for pair, result in latest_similarity.items()}
+            if latest_similarity is not None
+            else None
+        ),
+        "semantic_filter": "LLM latest-date similarity" if args.llm_similarity_model else "deterministic expression/feature similarity",
         "signal": {
             "file": "predictions.csv",
             "construction": "weighted mean of direction-adjusted cross-sectional factor ranks",
@@ -379,7 +568,7 @@ def main() -> None:
         f"- Suitability 阈值：`{args.min_suitability}`",
         f"- 语义相似度阈值：`{args.similarity_threshold}`",
         "",
-        f"> 市场状态：{'已启用最新日期的 LLM regime judge' if args.llm_regime_model else '确定性摘要'}；语义 judge 尚未启用。",
+        f"> 市场状态：{'已启用最新日期的 LLM regime judge' if args.llm_regime_model else '确定性摘要'}；因子相关性：{'已启用最新日期的 Tool Calling' if args.llm_relevance_model else '确定性筛选'}；语义去重：{'已启用最新日期的 Tool Calling' if args.llm_similarity_model else '确定性相似度'}。",
         "> 每个交易日的因子适用性只使用此前已产生标签的交易日，避免筛选时使用当日未来收益。",
     ]
     (args.output_dir / "report.md").write_text("\n".join(report) + "\n")
