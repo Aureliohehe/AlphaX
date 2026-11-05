@@ -2,10 +2,9 @@
 """Build leakage-safe technical features and a next-day return label.
 
 Every indicator is calculated independently within one ticker.  A row dated t
-uses data available through t and its target is the adjusted-close return from
-t to t+1.  The output is a panel suitable for the XGBoost baseline.  It stores both the
-next-close return used by the original baseline and an open-to-close target for
-signals executed at the next day's open.
+uses data available through t and its targets are forward adjusted-close returns
+from t to t+1 and t+5.  The output is a panel suitable for the XGBoost baseline.
+It also stores an open-to-close target for signals executed at the next day's open.
 """
 
 from __future__ import annotations
@@ -106,6 +105,7 @@ def add_features(frame: pd.DataFrame) -> pd.DataFrame:
         features[column] = features[column].replace([np.inf, -np.inf], np.nan)
     result = pd.concat([frame[["date", "ticker"]], features], axis=1)
     result["target_1d"] = close.shift(-1) / close - 1
+    result["target_5d"] = close.shift(-5) / close - 1
     # This target matches the portfolio convention: signal at T close,
     # execution at T+1 open, and valuation at T+1 close.
     result["target_open_close"] = close.shift(-1) / open_.shift(-1) - 1
@@ -155,8 +155,10 @@ def main() -> None:
                 if not feature_columns:
                     feature_columns = [
                         c for c in result.columns
-                        if c not in ("date", "ticker", "target_1d", "target_open_close")
+                        if c not in ("date", "ticker", "target_1d", "target_5d", "target_open_close")
                     ]
+                # Keep the final rows with an unavailable 5-day label so the
+                # 1-day signal/evaluation horizon is not truncated.
                 result = result.dropna(subset=feature_columns + ["target_1d", "target_open_close"]).copy()
                 result["split"] = split_name(result["date"])
                 result = result[result["split"] != "excluded"]

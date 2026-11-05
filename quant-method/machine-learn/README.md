@@ -39,7 +39,7 @@ python3 download_market_data.py --workers 8
 python3 build_features.py
 ```
 
-输出：`data/processed/sp500_features.csv.gz`。每行对应股票在交易日 `t` 的信号，`target_1d` 是 `t` 到下一个交易日的复权收盘价收益。当前生成 35 个特征，包括：
+输出：`data/processed/sp500_features.csv.gz`。每行对应股票在交易日 `t` 的信号，`target_1d` 和 `target_5d` 分别是 `t` 到未来 1 个和 5 个交易日的复权收盘价收益。当前生成 35 个特征，包括：
 
 - 动量：1/5/10/20/60 日收益率、价格相对 SMA/EMA
 - 趋势：MACD、MACD signal、MACD histogram
@@ -48,7 +48,7 @@ python3 build_features.py
 - 日内价格行为：振幅、开收盘收益、收盘价在日内区间的位置
 - 成交量：成交量变化、相对 20 日均量、成交量波动率
 
-指标只使用当日及之前的数据；标签使用下一交易日数据。前 120 个交易日作为指标预热期，不进入训练/验证/回测样本。
+指标只使用当日及之前的数据；标签使用未来交易日数据。前 120 个交易日作为指标预热期，不进入训练/验证/回测样本。
 
 ## Qlib + XGBoost 基线
 

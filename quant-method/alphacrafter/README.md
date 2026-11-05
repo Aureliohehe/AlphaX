@@ -35,7 +35,8 @@ quant-method/machine-learn/data/qlib/alphacrafter_miner_lite/
 - `candidate_metrics.csv`：所有候选的分段指标
 - `accepted_factors.json`：通过准入门槛的因子
 - `predictions.csv`：通过因子方向调整后的等权 composite 信号
-- `registry.json`：因子注册表快照
+- `registry.json`：因子注册表和维护状态快照
+- `factor_library.json`：持久化的活跃因子库
 - `report.md`：本轮报告
 
 当前时间切分为：训练集 2016–2022、验证集 2023、留出回测 2024–2026。验证集用于准入，留出回测只用于最终报告。
@@ -79,7 +80,40 @@ python3 quant-method/alphacrafter/miner_lite.py \
 
 当前允许的操作是 `feature`、`difference` 和 `sum`，避免执行任意 LLM 代码。
 
-也可以显式启用 LiteLLM 作为候选生成器；LLM 只负责提出 JSON，后续验证和准入逻辑完全相同：
+当前验证器同时评估 1 日和 5 日前瞻收益，并记录 Rank IC、Rank ICIR、Hit Ratio、Coverage 和横截面排名 Turnover。默认准入质量约束为 Coverage 不低于 0.90、Turnover 不高于 0.40，可通过以下参数调整：
+
+```bash
+python3 quant-method/alphacrafter/miner_lite.py \
+  --min-coverage 0.90 \
+  --max-turnover 0.40
+```
+
+旧版特征文件如果没有 `target_5d`，Miner 会从 `return_1d` 安全推导；重新运行 `build_features.py` 会直接生成该标签。详细多周期指标写入 `candidate_metrics.csv` 和 `report.md`。
+
+因子库会持久化到 `factor_library.json`，每次运行自动加载已有因子；默认每 90 天重新验证并淘汰衰减因子。可用 `--maintenance-interval-days` 调整周期，或用 `--as-of YYYY-MM-DD` 指定维护日期。
+
+当前还支持安全的因子 DSL/AST，不执行 LLM 返回的任意代码。例如：
+
+```json
+{
+  "candidate_id": "return_5d_ts_zscore",
+  "features": ["return_5d"],
+  "expression": {"op": "ts_zscore", "feature": "return_5d", "window": 20}
+}
+```
+
+允许的时间序列算子包括 `ts_mean`、`ts_std`、`ts_delta`、`ts_zscore`、`ts_rank` 和 `ts_corr`，窗口限制为 2–252 个交易日。模板模式可用 `--max-temporal` 控制时间序列候选数量。
+
+也可以显式启用 MinerLLM 作为候选生成器；LLM 只负责提出 JSON，后续验证和准入逻辑完全相同。DeepSeek 使用内置的 OpenAI-compatible 客户端，不需要安装 LiteLLM：
+
+```bash
+export DEEPSEEK_API_KEY=...
+python3 quant-method/alphacrafter/miner_lite.py \
+  --llm-model deepseek-chat \
+  --llm-count 40
+```
+
+也支持 `deepseek/deepseek-chat`、`deepseek-reasoner`。其他模型名仍通过 LiteLLM 调用，例如：
 
 ```bash
 python3 -m pip install litellm
@@ -89,7 +123,7 @@ python3 quant-method/alphacrafter/miner_lite.py \
   --llm-count 40
 ```
 
-也支持 `openai/gpt-4.1` 等 LiteLLM 模型名。默认不调用外部模型，使用可复现的模板生成器。
+默认不调用外部模型，使用可复现的模板生成器。API key 只从环境变量读取，不会写入输出文件。
 
 滚动因子准入可运行：
 
