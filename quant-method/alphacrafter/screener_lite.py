@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""AlphaCrafter Screener-lite.
+
+Select an ensemble from the persistent Miner factor library using only
+information available before each signal date.  The implementation follows the
+paper's Screener policy in a deterministic form:
+
+1. Compute each factor's trailing 10-session cross-sectional Rank IC.
+2. Keep factors above a suitability threshold.
+3. Remove structurally redundant factors with a lightweight expression
+   similarity check.
+4. Weight the survivors by absolute suitability and use the current IC sign as
+   their direction.
+5. Emit a time-varying composite signal suitable for the Qlib backtester.
+
+The paper uses an LLM for regime and semantic relevance judgments.  This
+lite version keeps those decisions deterministic and auditable; regime
+statistics are still recorded for later comparison with an LLM Screener.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from miner_lite import (
+    BASELINE_FEATURES,
+    META_COLUMNS,
+    Candidate,
+    _deepseek_completion,
+    candidate_from_factor,
+    evaluate_candidate_score,
+)
+
+
+def load_factor_library(path: Path) -> List[Dict[str, object]]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("Factor library must be a JSON object")
+    factors = payload.get("factors", payload.get("accepted_factors", []))
+    if not isinstance(factors, list):
+        raise ValueError("Factor library must contain factors or accepted_factors")
+    active = []
+    for factor in factors:
+        if not isinstance(factor, dict):
+            continue
+        if factor.get("status", "active") != "active":
+            continue
+        active.append(factor)
+    return active
+
+
+def cross_section_rank(values: pd.Series, dates: pd.Series) -> pd.Series:
+    return values.groupby(dates, sort=False).rank(pct=True) - 0.5
+
+
+def rank_correlation(left: pd.Series, right: pd.Series) -> float:
+    valid = pd.DataFrame({"left": left, "right": right}).dropna()
+    if len(valid) < 3 or valid["left"].nunique() < 2 or valid["right"].nunique() < 2:
+        return float("nan")
+    left_rank = valid["left"].rank(method="average").to_numpy(dtype=float)
+    right_rank = valid["right"].rank(method="average").to_numpy(dtype=float)
+    left_rank -= left_rank.mean()
+    right_rank -= right_rank.mean()
+    denominator = np.sqrt(np.dot(left_rank, left_rank) * np.dot(right_rank, right_rank))
+    return float(np.dot(left_rank, right_rank) / denominator) if denominator else float("nan")
+
+
+def daily_rank_ic(
+    dates: pd.Series, score: pd.Series, target: pd.Series
+) -> pd.Series:
+    values = pd.DataFrame({"date": dates, "score": score, "target": target}).dropna()
+    result = {}
+    for date, group in values.groupby("date", sort=True):
+        result[date] = rank_correlation(group["score"], group["target"])
+    return pd.Series(result, dtype=float).sort_index()
+
+
+def expression_similarity(left: Candidate, right: Candidate) -> float:
+    """Approximate semantic overlap without requiring another LLM call."""
+    if left.expression == right.expression:
+        return 1.0
+    left_features = set(left.features)
+    right_features = set(right.features)
+    union = left_features | right_features
+    feature_overlap = len(left_features & right_features) / len(union) if union else 0.0
+    text_similarity = SequenceMatcher(None, left.expression, right.expression).ratio()
+    op_similarity = 1.0 if left.op == right.op else 0.0
+    if feature_overlap == 0.0:
+        # Similar spelling alone is not semantic overlap: return_5d and
+        # return_20d should not be treated as identical just because they
+        # share the same operator text.
+        return 0.5 * op_similarity
+    return max(feature_overlap, 0.5 * text_similarity + 0.5 * op_similarity)
+
+
+def market_regime(frame: pd.DataFrame, date: pd.Timestamp) -> Dict[str, object]:
+    """Describe the observable market state at a signal date."""
+    current = frame[frame["date"] == date]
+    history = frame[frame["date"] < date]
+    median_return = float(current["return_1d"].median()) if not current.empty else float("nan")
+    breadth = float((current["return_1d"] > 0).mean()) if not current.empty else float("nan")
+    current_vol = float(current["volatility_20d"].median()) if "volatility_20d" in current else float("nan")
+    history_vol = (
+        float(history["volatility_20d"].median())
+        if "volatility_20d" in history and not history.empty
+        else float("nan")
+    )
+    if not np.isnan(current_vol) and not np.isnan(history_vol) and current_vol > 1.25 * history_vol:
+        regime = "high_volatility"
+    elif median_return >= 0.001 and breadth >= 0.55:
+        regime = "bullish_trend"
+    elif median_return <= -0.001 and breadth <= 0.45:
+        regime = "bearish_trend"
+    else:
+        regime = "mixed_or_sideways"
+    return {
+        "regime": regime,
+        "median_return_1d": median_return,
+        "positive_return_breadth": breadth,
+        "median_volatility_20d": current_vol,
+    }
+
+
+def assess_regime_with_llm(
+    frame: pd.DataFrame, date: pd.Timestamp, model: str
+) -> Dict[str, object]:
+    """Ask DeepSeek for a structured regime diagnosis at one signal date."""
+    history = frame[frame["date"] <= date].sort_values("date")
+    recent = history.tail(60)
+    fields = ["return_1d", "return_5d", "return_20d", "volatility_20d", "volume_ratio_20d"]
+    summary = {
+        field: float(recent[field].median())
+        for field in fields
+        if field in recent and recent[field].notna().any()
+    }
+    breadth = float((recent["return_1d"] > 0).mean()) if "return_1d" in recent else None
+    prompt = f"""Assess the market regime for a cross-sectional equity factor screener.
+Return only one JSON object with this schema:
+{{
+  "regime": "bullish_trend|bearish_trend|high_volatility|mixed_or_sideways",
+  "relevant_themes": ["momentum|reversal|volatility|volume"],
+  "confidence": 0.0,
+  "rationale": "one short sentence"
+}}
+Use only the supplied point-in-time statistics. Do not make a trade decision.
+As-of date: {date.date()}
+Recent 60-row statistics: {json.dumps(summary, ensure_ascii=False)}
+Recent positive-return breadth: {breadth}
+"""
+    model_name = model.split("/", 1)[1] if model.startswith("deepseek/") else model
+    if model_name not in {"deepseek-chat", "deepseek-reasoner"}:
+        raise ValueError("LLM regime judge currently supports deepseek-chat/deepseek-reasoner only")
+    content = _deepseek_completion(
+        [
+            {"role": "system", "content": "Return only valid JSON matching the supplied schema."},
+            {"role": "user", "content": prompt},
+        ],
+        model_name,
+    ).strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    result = json.loads(content)
+    if not isinstance(result, dict):
+        raise ValueError("Regime response must be a JSON object")
+    allowed_regimes = {"bullish_trend", "bearish_trend", "high_volatility", "mixed_or_sideways"}
+    if result.get("regime") not in allowed_regimes:
+        raise ValueError("Regime response contains an unsupported regime")
+    try:
+        confidence = float(result.get("confidence", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Regime confidence must be numeric") from exc
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("Regime confidence must be between 0 and 1")
+    result["confidence"] = confidence
+    result["source"] = "llm"
+    return result
+
+
+def select_ensemble(
+    date: pd.Timestamp,
+    dates: Sequence[pd.Timestamp],
+    candidates: Dict[str, Candidate],
+    daily_ics: Dict[str, pd.Series],
+    min_history_days: int,
+    min_suitability: float,
+    similarity_threshold: float,
+    max_factors: int,
+) -> List[Dict[str, object]]:
+    position = list(dates).index(date)
+    previous_dates = list(dates[max(0, position - min_history_days) : position])
+    if len(previous_dates) < min_history_days:
+        return []
+
+    scored = []
+    for candidate_id, ics in daily_ics.items():
+        trailing = ics.reindex(previous_dates).dropna()
+        if len(trailing) < min_history_days:
+            continue
+        suitability = float(trailing.mean())
+        if abs(suitability) >= min_suitability:
+            scored.append((candidate_id, suitability))
+    scored.sort(key=lambda item: abs(item[1]), reverse=True)
+
+    selected: List[Tuple[str, float]] = []
+    for candidate_id, suitability in scored:
+        candidate = candidates[candidate_id]
+        if any(
+            expression_similarity(candidate, candidates[selected_id]) >= similarity_threshold
+            for selected_id, _ in selected
+        ):
+            continue
+        selected.append((candidate_id, suitability))
+        if len(selected) >= max_factors:
+            break
+
+    total = sum(abs(suitability) for _, suitability in selected)
+    return [
+        {
+            "candidate_id": candidate_id,
+            "suitability_rank_ic": suitability,
+            "direction": 1 if suitability >= 0 else -1,
+            "weight": abs(suitability) / total if total else 0.0,
+            "expression": candidates[candidate_id].expression,
+        }
+        for candidate_id, suitability in selected
+    ]
+
+
+def main() -> None:
+    base = Path(__file__).resolve().parents[1] / "machine-learn"
+    parser = argparse.ArgumentParser(description="Run the deterministic AlphaCrafter Screener-lite")
+    parser.add_argument(
+        "--input", type=Path, default=base / "data" / "processed" / "sp500_features.csv.gz"
+    )
+    parser.add_argument(
+        "--factor-library",
+        type=Path,
+        default=base / "data" / "qlib" / "alphacrafter_miner_lite" / "factor_library.json",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=base / "data" / "qlib" / "alphacrafter_screener_lite",
+    )
+    parser.add_argument("--lookback-days", type=int, default=10)
+    parser.add_argument(
+        "--min-suitability",
+        type=float,
+        default=0.02,
+        help="Minimum trailing Rank IC suitability (paper threshold: 0.02)",
+    )
+    parser.add_argument("--similarity-threshold", type=float, default=0.80)
+    parser.add_argument("--max-factors", type=int, default=20)
+    parser.add_argument(
+        "--llm-regime-model",
+        default=None,
+        help="Optional DeepSeek model for one latest-date regime diagnosis",
+    )
+    args = parser.parse_args()
+    if args.lookback_days < 1 or args.max_factors < 1:
+        parser.error("lookback and max-factors must be positive")
+
+    frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
+    frame = frame.dropna(subset=["target_1d"]).reset_index(drop=True)
+    available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
+    ranked = frame[available].groupby(frame["date"], sort=False).rank(pct=True).astype("float32")
+    dates = sorted(frame["date"].drop_duplicates())
+    factors = load_factor_library(args.factor_library)
+    candidates: Dict[str, Candidate] = {}
+    invalid_factors = []
+    for factor in factors:
+        try:
+            candidate = candidate_from_factor(factor)
+        except (TypeError, ValueError) as exc:
+            invalid_factors.append({"candidate_id": factor.get("candidate_id", "<unknown>"), "error": str(exc)})
+            continue
+        candidates[candidate.candidate_id] = candidate
+    if not candidates:
+        raise SystemExit("No valid active factors found in the factor library")
+
+    latest_llm_regime: Optional[Dict[str, object]] = None
+    if args.llm_regime_model:
+        try:
+            latest_llm_regime = assess_regime_with_llm(frame, dates[-1], args.llm_regime_model)
+        except (ValueError, RuntimeError, SystemExit) as exc:
+            raise SystemExit(f"LLM regime judge failed: {exc}") from exc
+
+    scores: Dict[str, pd.Series] = {}
+    rank_scores: Dict[str, pd.Series] = {}
+    daily_ics: Dict[str, pd.Series] = {}
+    for candidate_id, candidate in candidates.items():
+        score = evaluate_candidate_score(candidate, ranked, frame, frame["date"])
+        scores[candidate_id] = score
+        rank_scores[candidate_id] = cross_section_rank(score, frame["date"])
+        daily_ics[candidate_id] = daily_rank_ic(frame["date"], score, frame["target_1d"])
+
+    predictions = pd.Series(np.nan, index=frame.index, dtype=float)
+    selection_rows: List[Dict[str, object]] = []
+    regime_rows: List[Dict[str, object]] = []
+    selected_days = 0
+    for date in dates:
+        ensemble = select_ensemble(
+            date,
+            dates,
+            candidates,
+            daily_ics,
+            args.lookback_days,
+            args.min_suitability,
+            args.similarity_threshold,
+            args.max_factors,
+        )
+        regime = market_regime(frame, date)
+        regime["regime_source"] = "deterministic"
+        if latest_llm_regime is not None and date == dates[-1]:
+            regime.update(
+                {
+                    "llm_regime": latest_llm_regime["regime"],
+                    "llm_relevant_themes": latest_llm_regime.get("relevant_themes", []),
+                    "llm_confidence": latest_llm_regime["confidence"],
+                    "llm_rationale": latest_llm_regime.get("rationale", ""),
+                    "regime_source": "llm",
+                }
+            )
+        regime_rows.append({"date": str(date.date()), **regime, "selected_factor_count": len(ensemble)})
+        if not ensemble:
+            continue
+        selected_days += 1
+        day_mask = frame["date"] == date
+        for factor in ensemble:
+            selection_rows.append({"date": str(date.date()), **factor, **regime})
+            predictions.loc[day_mask] = predictions.loc[day_mask].fillna(0.0) + factor["weight"] * factor["direction"] * rank_scores[factor["candidate_id"]].loc[day_mask]
+
+    signal = pd.DataFrame(
+        {
+            "datetime": frame.loc[predictions.notna(), "date"].to_numpy(),
+            "instrument": frame.loc[predictions.notna(), "ticker"].to_numpy(),
+            "prediction": predictions.loc[predictions.notna()].to_numpy(dtype=float),
+        }
+    ).sort_values(["datetime", "instrument"])
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    signal.to_csv(args.output_dir / "predictions.csv", index=False)
+    pd.DataFrame(selection_rows).to_csv(args.output_dir / "selection.csv", index=False)
+    pd.DataFrame(regime_rows).to_csv(args.output_dir / "regime.csv", index=False)
+
+    summary = {
+        "screener_version": "screener-lite-v1",
+        "factor_library": str(args.factor_library),
+        "input": str(args.input),
+        "factor_count": len(candidates),
+        "selected_signal_days": selected_days,
+        "lookback_days": args.lookback_days,
+        "min_suitability_rank_ic": args.min_suitability,
+        "similarity_threshold": args.similarity_threshold,
+        "max_factors": args.max_factors,
+        "llm_regime_model": args.llm_regime_model,
+        "llm_regime_scope": "latest available signal date only" if args.llm_regime_model else None,
+        "semantic_filter": "deterministic expression/feature similarity",
+        "signal": {
+            "file": "predictions.csv",
+            "construction": "weighted mean of direction-adjusted cross-sectional factor ranks",
+            "execution": "T close signal, T+1 open trade",
+        },
+        "invalid_factors": invalid_factors,
+    }
+    (args.output_dir / "registry.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
+    report = [
+        "# AlphaCrafter Screener-lite 报告",
+        "",
+        f"- 因子库规模：`{len(candidates)}`",
+        f"- 产生信号的交易日：`{selected_days}` / `{len(dates)}`",
+        f"- 滚动窗口：`{args.lookback_days}` 日",
+        f"- Suitability 阈值：`{args.min_suitability}`",
+        f"- 语义相似度阈值：`{args.similarity_threshold}`",
+        "",
+        f"> 市场状态：{'已启用最新日期的 LLM regime judge' if args.llm_regime_model else '确定性摘要'}；语义 judge 尚未启用。",
+        "> 每个交易日的因子适用性只使用此前已产生标签的交易日，避免筛选时使用当日未来收益。",
+    ]
+    (args.output_dir / "report.md").write_text("\n".join(report) + "\n")
+    print(f"Active factors: {len(candidates)}")
+    print(f"Signal days: {selected_days}/{len(dates)}")
+    print(f"Results written to {args.output_dir}")
+
+
+if __name__ == "__main__":
+    main()

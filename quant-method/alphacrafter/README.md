@@ -125,6 +125,26 @@ python3 quant-method/alphacrafter/miner_lite.py \
 
 默认不调用外部模型，使用可复现的模板生成器。API key 只从环境变量读取，不会写入输出文件。
 
+## Screener-lite
+
+Screener-lite 从持久化因子库中按过去 10 个已产生标签的交易日 Rank IC 动态筛选因子，执行表达式去重，并按绝对适用性分配权重和方向。每个信号日只使用此前的收益标签：
+
+```bash
+python3 quant-method/alphacrafter/screener_lite.py \
+  --factor-library quant-method/machine-learn/data/qlib/alphacrafter_miner_persistent/factor_library.json \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_screener_lite
+```
+
+输出的 `predictions.csv` 可直接用于 Qlib 组合回测；`selection.csv` 记录每天选中的因子、方向和权重，`regime.csv` 记录市场状态摘要。可以单独启用最新信号日的 DeepSeek regime judge：
+
+```bash
+python3 quant-method/alphacrafter/screener_lite.py \
+  --factor-library quant-method/machine-learn/data/qlib/alphacrafter_miner_persistent/factor_library.json \
+  --llm-regime-model deepseek-chat
+```
+
+当前 LLM regime 结果只写入 `regime.csv` 和 `registry.json`，尚未参与因子过滤；下一步再加入语义 relevance judge，避免一次引入多个变量。
+
 滚动因子准入可运行：
 
 ```bash
