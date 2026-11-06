@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -139,8 +139,85 @@ def _alpha158_features(
     return pd.DataFrame(output, index=close.index)
 
 
-def add_features(frame: pd.DataFrame) -> pd.DataFrame:
+def _prepare_point_in_time_panel(
+    panel: pd.DataFrame, prefix: str, aggregate_news: bool = False
+) -> pd.DataFrame:
+    """Normalize an optional point-in-time panel for leakage-safe as-of joins.
+
+    The panel must contain ``ticker`` and either ``available_date`` or ``date``.
+    ``available_date`` is preferred because report/fact dates are not necessarily
+    the date on which the information became public.
+    """
+    required = {"ticker"}
+    if not required.issubset(panel.columns):
+        raise ValueError(f"{prefix} panel must contain ticker")
+    date_column = "available_date" if "available_date" in panel.columns else "date"
+    if date_column not in panel.columns:
+        raise ValueError(f"{prefix} panel must contain available_date or date")
+    prepared = panel.copy()
+    prepared["ticker"] = prepared["ticker"].astype(str)
+    prepared["_available_date"] = pd.to_datetime(prepared[date_column], errors="coerce")
+    prepared = prepared.dropna(subset=["_available_date"])
+    value_columns = []
+    for column in prepared.columns:
+        if column in {"ticker", "date", "available_date", "_available_date"}:
+            continue
+        numeric = pd.to_numeric(prepared[column], errors="coerce")
+        if numeric.notna().any():
+            prepared[column] = numeric
+            value_columns.append(column)
+    if aggregate_news:
+        sentiment = next(
+            (column for column in ("sentiment", "sentiment_score", "polarity") if column in prepared),
+            None,
+        )
+        group_columns = ["ticker", "_available_date"]
+        aggregates = {"news_count": (prepared["ticker"].groupby([prepared["ticker"], prepared["_available_date"]]).size())}
+        if sentiment:
+            aggregates[f"{prefix}sentiment"] = prepared.groupby(group_columns)[sentiment].mean()
+        output = pd.DataFrame(aggregates).reset_index()
+        output = output.rename(columns={"news_count": f"{prefix}count"})
+        return output
+    output = prepared[["ticker", "_available_date"] + value_columns].copy()
+    output = output.rename(columns={column: f"{prefix}{column}" for column in value_columns})
+    return output.groupby(["ticker", "_available_date"], as_index=False).last()
+
+
+def _merge_asof_panel(
+    frame: pd.DataFrame, panel: Optional[pd.DataFrame], prefix: str, aggregate_news: bool = False
+) -> pd.DataFrame:
+    """Merge external data using only observations available on or before date."""
+    if panel is None or panel.empty:
+        return frame
+    prepared = _prepare_point_in_time_panel(panel, prefix, aggregate_news)
+    value_columns = [column for column in prepared.columns if column not in {"ticker", "_available_date"}]
+    output = pd.DataFrame(index=frame.index, columns=value_columns, dtype=float)
+    for ticker, indices in frame.groupby("ticker", sort=False).groups.items():
+        left = frame.loc[indices, ["date"]].copy()
+        left["_row_id"] = list(indices)
+        right = prepared[prepared["ticker"] == str(ticker)][["_available_date"] + value_columns]
+        if right.empty:
+            continue
+        merged = pd.merge_asof(
+            left.sort_values("date"),
+            right.sort_values("_available_date"),
+            left_on="date",
+            right_on="_available_date",
+            direction="backward",
+        )
+        merged = merged.set_index("_row_id")
+        output.loc[merged.index, value_columns] = merged[value_columns].to_numpy()
+    return pd.concat([frame, output], axis=1)
+
+
+def add_features(
+    frame: pd.DataFrame,
+    fundamentals: Optional[pd.DataFrame] = None,
+    news: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     frame = frame.sort_values("date").drop_duplicates("date").copy()
+    frame = _merge_asof_panel(frame, fundamentals, "fundamental_")
+    frame = _merge_asof_panel(frame, news, "news_", aggregate_news=True)
     numeric = ["open", "high", "low", "close", "adj_close", "volume"]
     for column in numeric:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
@@ -212,16 +289,24 @@ def add_features(frame: pd.DataFrame) -> pd.DataFrame:
 
     for column in features:
         features[column] = features[column].replace([np.inf, -np.inf], np.nan)
+    external_columns = [
+        column
+        for column in frame.columns
+        if column.startswith("fundamental_") or column.startswith("news_")
+    ]
     result = pd.concat(
         [
-            frame[["date", "ticker"]],
+            frame[["date", "ticker"] + external_columns],
             features,
             pd.DataFrame(
                 {
                     "target_1d": close.shift(-1) / close - 1,
                     "target_5d": close.shift(-5) / close - 1,
-                    # Signal at T close, execution at T+1 open, valuation at T+1 close.
+                    # Signal at T close, execution at T+1 open.
                     "target_open_close": close.shift(-1) / open_.shift(-1) - 1,
+                    # Execution-aligned five-session label: enter at T+1 open,
+                    # exit at T+5 close.
+                    "target_open_close_5d": close.shift(-5) / open_.shift(-1) - 1,
                 },
                 index=frame.index,
             ),
@@ -251,9 +336,23 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parent / "data" / "processed" / "sp500_features.csv.gz",
     )
+    parser.add_argument(
+        "--fundamentals",
+        type=Path,
+        default=None,
+        help="Optional CSV with ticker, available_date/date, and numeric fundamental fields",
+    )
+    parser.add_argument(
+        "--news",
+        type=Path,
+        default=None,
+        help="Optional CSV with ticker, available_date/date, and sentiment fields",
+    )
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
+    fundamentals = pd.read_csv(args.fundamentals) if args.fundamentals else None
+    news = pd.read_csv(args.news) if args.news else None
     input_files = sorted(args.input.glob("*.csv"))
     if not input_files:
         raise SystemExit("No per-ticker CSV files found in {}".format(args.input))
@@ -270,15 +369,31 @@ def main() -> None:
             text_output = __import__("io").TextIOWrapper(compressed, encoding="utf-8", newline="")
             for n, path in enumerate(input_files, 1):
                 frame = pd.read_csv(path, parse_dates=["date"])
-                result = add_features(frame)
+                result = add_features(frame, fundamentals=fundamentals, news=news)
                 if not feature_columns:
                     feature_columns = [
                         c for c in result.columns
-                        if c not in ("date", "ticker", "target_1d", "target_5d", "target_open_close")
+                        if c not in (
+                            "date",
+                            "ticker",
+                            "target_1d",
+                            "target_5d",
+                            "target_open_close",
+                            "target_open_close_5d",
+                        )
                     ]
-                # Keep the final rows with an unavailable 5-day label so the
-                # 1-day signal/evaluation horizon is not truncated.
-                result = result.dropna(subset=feature_columns + ["target_1d", "target_open_close"]).copy()
+                # Keep the final rows with unavailable forward labels so the
+                # 1-day signal is not truncated.  Optional fundamentals/news
+                # remain NA when unavailable; Miner reports their coverage
+                # instead of silently deleting those observations.
+                technical_columns = [
+                    column
+                    for column in feature_columns
+                    if not column.startswith(("fundamental_", "news_"))
+                ]
+                result = result.dropna(
+                    subset=technical_columns + ["target_1d", "target_open_close"]
+                ).copy()
                 result["split"] = split_name(result["date"])
                 result = result[result["split"] != "excluded"]
                 result.to_csv(text_output, index=False, header=not wrote_header)

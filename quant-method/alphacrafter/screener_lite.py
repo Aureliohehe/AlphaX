@@ -407,7 +407,8 @@ def main() -> None:
         parser.error("lookback and max-factors must be positive")
 
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
-    frame = frame.dropna(subset=["target_1d"]).reset_index(drop=True)
+    execution_target = "target_open_close" if "target_open_close" in frame else "target_1d"
+    frame = frame.dropna(subset=[execution_target]).reset_index(drop=True)
     available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
     ranked = frame[available].groupby(frame["date"], sort=False).rank(pct=True).astype("float32")
     dates = sorted(frame["date"].drop_duplicates())
@@ -453,7 +454,7 @@ def main() -> None:
         score = evaluate_candidate_score(candidate, ranked, frame, frame["date"])
         scores[candidate_id] = score
         rank_scores[candidate_id] = cross_section_rank(score, frame["date"])
-        daily_ics[candidate_id] = daily_rank_ic(frame["date"], score, frame["target_1d"])
+        daily_ics[candidate_id] = daily_rank_ic(frame["date"], score, frame[execution_target])
 
     latest_similarity: Optional[Dict[Tuple[str, str], Dict[str, object]]] = None
     if args.llm_similarity_model:

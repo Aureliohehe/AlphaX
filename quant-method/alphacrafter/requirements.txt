@@ -1,0 +1,5 @@
+# Optional LLM orchestration backend
+typing-extensions>=4.5
+langgraph>=0.2
+# Required only for non-DeepSeek providers
+litellm>=1.40

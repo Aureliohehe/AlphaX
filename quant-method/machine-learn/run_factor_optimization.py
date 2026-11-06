@@ -19,7 +19,15 @@ import pandas as pd
 
 EVAL_YEARS = (2021, 2022, 2023)
 TOP_K = (1, 2, 4, 8, 12)
-FEATURE_EXCLUDE = {"date", "ticker", "target_1d", "target_open_close", "split"}
+FEATURE_EXCLUDE = {
+    "date",
+    "ticker",
+    "target_1d",
+    "target_5d",
+    "target_open_close",
+    "target_open_close_5d",
+    "split",
+}
 # ``one_day_reversal`` is exactly ``-return_1d``.  Exclude both from the
 # candidate pool so the screen measures incremental information beyond the
 # simple reversal baseline rather than counting the same factor twice.
@@ -107,7 +115,7 @@ def main() -> None:
     all_features = [column for column in frame.columns if column not in FEATURE_EXCLUDE]
     features = [column for column in all_features if column not in BASELINE_FEATURES]
     dates = frame["date"]
-    target = frame["target_1d"]
+    target = frame["target_open_close"] if "target_open_close" in frame else frame["target_1d"]
 
     # Rank transformation is calculated date by date.  Ranking is also what
     # makes this screen comparable to the final cross-sectional IC objective.

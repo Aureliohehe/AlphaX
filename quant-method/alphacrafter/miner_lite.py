@@ -34,9 +34,17 @@ META_COLUMNS = {
     "target_1d",
     "target_5d",
     "target_open_close",
+    "target_open_close_5d",
     "split",
 }
 EVALUATION_HORIZONS = (1, 5)
+# Thresholds from AlphaCrafter Algorithm 1.  They apply to both the
+# training and validation windows used by this implementation.
+PAPER_HORIZON_THRESHOLDS = {
+    1: {"ic": 0.015, "rank_ic": 0.015, "icir": 0.20, "rank_icir": 0.20},
+    5: {"ic": 0.025, "rank_ic": 0.025, "icir": 0.25, "rank_icir": 0.25},
+}
+PAPER_MIN_HIT_DEVIATION = 0.10
 ALLOWED_OPS = {"feature", "difference", "sum"}
 EXPRESSION_OPS = {
     "feature",
@@ -65,6 +73,11 @@ EXPRESSION_OPS = {
 MAX_EXPRESSION_DEPTH = 4
 MIN_ROLLING_WINDOW = 2
 MAX_ROLLING_WINDOW = 252
+MINER_AGENT_ROLES = (
+    "momentum_and_reversal_researcher",
+    "volatility_and_volume_researcher",
+    "cross_signal_composition_researcher",
+)
 
 # Related features are paired only within a family.  This keeps the first
 # search interpretable and prevents a combinatorial explosion.
@@ -231,6 +244,100 @@ def validate_expression(
             raise ValueError(f"Expression uses unavailable features: {missing}")
 
 
+def _candidate_expression_spec(candidate: Candidate) -> Dict[str, object]:
+    """Represent legacy candidates as ASTs for novelty analysis."""
+    if candidate.expression_spec is not None:
+        return candidate.expression_spec
+    if candidate.op == "feature":
+        return {"op": "feature", "feature": candidate.features[0]}
+    return {
+        "op": candidate.op,
+        "inputs": [
+            {"op": "feature", "feature": candidate.features[0]},
+            {"op": "feature", "feature": candidate.features[1]},
+        ],
+    }
+
+
+def _expression_tokens(node: Dict[str, object]) -> List[str]:
+    """Pre-order AST topology tokens used by the novelty diagnostic."""
+    op = str(node.get("op"))
+    if op == "feature":
+        return ["feature"]
+    if op == "ts_corr":
+        return [op, "feature", "feature"]
+    if op.startswith("ts_"):
+        return [op, "feature"]
+    tokens = [op]
+    child = node.get("input")
+    if isinstance(child, dict):
+        tokens.extend(_expression_tokens(child))
+    children = node.get("inputs")
+    if isinstance(children, list):
+        for value in children:
+            if isinstance(value, dict):
+                tokens.extend(_expression_tokens(value))
+    return tokens
+
+
+def _sequence_edit_distance(left: Sequence[str], right: Sequence[str]) -> int:
+    previous = list(range(len(right) + 1))
+    for left_index, left_value in enumerate(left, 1):
+        current = [left_index]
+        for right_index, right_value in enumerate(right, 1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_value != right_value),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def expression_novelty_report(
+    candidates: Sequence[Candidate], baseline: Sequence[Candidate] = ()
+) -> Dict[str, object]:
+    """Report normalized structural diversity, following the paper's case study."""
+    tokenized = {
+        candidate.candidate_id: _expression_tokens(_candidate_expression_spec(candidate))
+        for candidate in candidates
+    }
+
+    def distance(left: Sequence[str], right: Sequence[str]) -> float:
+        denominator = max(1, len(left) + len(right))
+        return float(_sequence_edit_distance(left, right) / denominator)
+
+    pair_distances = [
+        distance(tokenized[left.candidate_id], tokenized[right.candidate_id])
+        for index, left in enumerate(candidates)
+        for right in candidates[index + 1 :]
+    ]
+    baseline_tokens = [
+        _expression_tokens(_candidate_expression_spec(candidate)) for candidate in baseline
+    ]
+    nearest_baseline = []
+    if baseline_tokens:
+        for candidate in candidates:
+            nearest_baseline.append(
+                min(distance(tokenized[candidate.candidate_id], tokens) for tokens in baseline_tokens)
+            )
+    return {
+        "candidate_count": len(candidates),
+        "baseline_count": len(baseline),
+        "internal_structural_diversity": (
+            float(np.mean(pair_distances)) if pair_distances else np.nan
+        ),
+        "external_structural_novelty": (
+            float(np.mean(nearest_baseline)) if nearest_baseline else np.nan
+        ),
+        "max_external_structural_novelty": (
+            float(np.max(nearest_baseline)) if nearest_baseline else np.nan
+        ),
+    }
+
+
 def render_expression(node: Dict[str, object]) -> str:
     op = str(node["op"])
     if op == "feature":
@@ -268,6 +375,9 @@ def render_expression(node: Dict[str, object]) -> str:
 @dataclass
 class Metric:
     rows: int
+    mean_daily_ic: float
+    daily_ic_std: float
+    icir: float
     mean_daily_rank_ic: float
     daily_rank_ic_std: float
     rank_icir: float
@@ -484,7 +594,11 @@ def build_market_context(frame: pd.DataFrame, train_mask: pd.Series) -> str:
 
 
 def generate_llm_candidates(
-    model: str, available: Sequence[str], market_context: str, count: int
+    model: str,
+    available: Sequence[str],
+    market_context: str,
+    count: int,
+    role: str = "general_factor_researcher",
 ) -> List[Candidate]:
     """Generate candidates with DeepSeek directly or another LiteLLM provider.
 
@@ -492,7 +606,7 @@ def generate_llm_candidates(
     OpenAI-compatible and the Miner should work without installing a second
     LLM framework.  Other model names retain the existing LiteLLM path.
     """
-    prompt = f"""You are the Miner component of a cross-sectional quantitative research system.
+    prompt = f"""You are the {role}, one specialist in a Miner Cluster for a cross-sectional quantitative research system.
 Generate exactly {count} candidate factors using only the approved feature names and operations.
 Do not use future data, prices after the as_of date, arbitrary Python, or unavailable fields.
 A candidate must be a JSON object with:
@@ -550,6 +664,46 @@ Point-in-time market context: {market_context}
     for candidate in candidates:
         validate_candidate(candidate, available)
     return candidates
+
+
+def generate_llm_candidate_cluster(
+    model: str,
+    available: Sequence[str],
+    market_context: str,
+    count: int,
+    agents: int,
+) -> List[Candidate]:
+    """Run independent specialist Miner agents and deduplicate their proposals."""
+    if agents < 1:
+        raise ValueError("agents must be positive")
+    roles = list(MINER_AGENT_ROLES)
+    proposals: List[Candidate] = []
+    seen_ids = set()
+    seen_expressions = set()
+    per_agent = max(1, int(np.ceil(count / agents)))
+    for index in range(agents):
+        role = roles[index % len(roles)]
+        for candidate in generate_llm_candidates(
+            model, available, market_context, per_agent, role=role
+        ):
+            expression = candidate.expression
+            candidate_id = candidate.candidate_id
+            if expression in seen_expressions:
+                continue
+            if candidate_id in seen_ids:
+                candidate = Candidate(
+                    candidate_id=f"{candidate_id}__agent{index + 1}",
+                    op=candidate.op,
+                    features=candidate.features,
+                    hypothesis=candidate.hypothesis,
+                    expression_spec=candidate.expression_spec,
+                )
+            seen_ids.add(candidate.candidate_id)
+            seen_expressions.add(expression)
+            proposals.append(candidate)
+            if len(proposals) >= count:
+                return proposals
+    return proposals
 
 
 def _deepseek_tool_call(
@@ -665,20 +819,31 @@ def evaluate_score(
 
     values = frame.dropna(subset=["score", "target"])
     daily_ic: List[float] = []
+    daily_rank_ic: List[float] = []
     spreads: List[float] = []
     for _, group in values.groupby("date", sort=False):
         if len(group) < 3 or group["score"].nunique() < 2 or group["target"].nunique() < 2:
             continue
+        # Pearson IC on the original values, as required by the paper.
+        score_values = group["score"].to_numpy(dtype=float)
+        target_values = group["target"].to_numpy(dtype=float)
+        score_values -= score_values.mean()
+        target_values -= target_values.mean()
+        denominator = np.sqrt(np.dot(score_values, score_values) * np.dot(target_values, target_values))
+        if denominator == 0:
+            continue
+        daily_ic.append(float(np.dot(score_values, target_values) / denominator))
+
         # Rank the score and target inside each trading day.  This is
         # equivalent to Spearman correlation and avoids scipy as a dependency.
         score_rank = group["score"].rank(method="average").to_numpy(dtype=float)
         target_rank = group["target"].rank(method="average").to_numpy(dtype=float)
         score_rank -= score_rank.mean()
         target_rank -= target_rank.mean()
-        denominator = np.sqrt(np.dot(score_rank, score_rank) * np.dot(target_rank, target_rank))
-        if denominator == 0:
+        rank_denominator = np.sqrt(np.dot(score_rank, score_rank) * np.dot(target_rank, target_rank))
+        if rank_denominator == 0:
             continue
-        daily_ic.append(float(np.dot(score_rank, target_rank) / denominator))
+        daily_rank_ic.append(float(np.dot(score_rank, target_rank) / rank_denominator))
         count = max(1, len(group) // 10)
         ordered = group.sort_values("score")
         spreads.append(
@@ -690,44 +855,64 @@ def evaluate_score(
     ranked = valid_scores.copy()
     ranked["cross_sectional_rank"] = ranked.groupby("date", sort=False)["score"].rank(pct=True)
     dates_sorted = sorted(ranked["date"].drop_duplicates())
-    previous_dates = dict(zip(dates_sorted[1:], dates_sorted[:-1]))
-    ranked["previous_date"] = ranked["date"].map(previous_dates)
-    previous = ranked[["date", "instrument", "cross_sectional_rank"]].rename(
-        columns={"date": "previous_date", "cross_sectional_rank": "previous_rank"}
-    )
-    joined = ranked.dropna(subset=["previous_date"]).merge(
-        previous, on=["previous_date", "instrument"], how="inner"
-    )
-    if joined.empty:
+    if len(dates_sorted) < 2:
         turnover = np.nan
     else:
-        daily_turnover = (
-            (joined["cross_sectional_rank"] - joined["previous_rank"])
-            .abs()
-            .groupby(joined["date"], sort=False)
-            .mean()
+        previous_dates = dict(zip(dates_sorted[1:], dates_sorted[:-1]))
+        ranked["previous_date"] = pd.to_datetime(ranked["date"].map(previous_dates))
+        previous = ranked[["date", "instrument", "cross_sectional_rank"]].rename(
+            columns={"date": "previous_date", "cross_sectional_rank": "previous_rank"}
         )
-        turnover = float(daily_turnover.mean()) if not daily_turnover.empty else np.nan
+        joined = ranked.dropna(subset=["previous_date"]).merge(
+            previous, on=["previous_date", "instrument"], how="inner"
+        )
+        if joined.empty:
+            turnover = np.nan
+        else:
+            daily_turnover = (
+                (joined["cross_sectional_rank"] - joined["previous_rank"])
+                .abs()
+                .groupby(joined["date"], sort=False)
+                .mean()
+            )
+            turnover = float(daily_turnover.mean()) if not daily_turnover.empty else np.nan
 
     ic = pd.Series(daily_ic, dtype=float).dropna()
+    rank_ic = pd.Series(daily_rank_ic, dtype=float).dropna()
     spread = pd.Series(spreads, dtype=float).dropna()
-    if ic.empty:
-        return Metric(0, np.nan, np.nan, np.nan, np.nan, np.nan, coverage, turnover)
-    std = float(ic.std())
+    if ic.empty or rank_ic.empty:
+        return Metric(
+            rows=0,
+            mean_daily_ic=np.nan,
+            daily_ic_std=np.nan,
+            icir=np.nan,
+            mean_daily_rank_ic=np.nan,
+            daily_rank_ic_std=np.nan,
+            rank_icir=np.nan,
+            rank_ic_hit_ratio=np.nan,
+            mean_top_bottom_decile_spread=np.nan,
+            coverage=coverage,
+            turnover=turnover,
+        )
+    ic_std = float(ic.std())
+    rank_ic_std = float(rank_ic.std())
     return Metric(
         rows=int(len(values)),
-        mean_daily_rank_ic=float(ic.mean()),
-        daily_rank_ic_std=std,
-        rank_icir=float(ic.mean() / std) if std else np.nan,
-        rank_ic_hit_ratio=float((ic > 0).mean()),
-        mean_top_bottom_decile_spread=float(spread.mean()),
+        mean_daily_ic=float(ic.mean()),
+        daily_ic_std=ic_std,
+        icir=float(ic.mean() / ic_std) if ic_std else np.nan,
+        mean_daily_rank_ic=float(rank_ic.mean()),
+        daily_rank_ic_std=rank_ic_std,
+        rank_icir=float(rank_ic.mean() / rank_ic_std) if rank_ic_std else np.nan,
+        rank_ic_hit_ratio=float((rank_ic > 0).mean()),
+        mean_top_bottom_decile_spread=float(spread.mean()) if not spread.empty else np.nan,
         coverage=coverage,
         turnover=turnover,
     )
 
 
 def derive_target_5d(frame: pd.DataFrame) -> pd.Series:
-    """Derive a five-session forward return for legacy feature files."""
+    """Derive a five-session close-to-close forward return for legacy files."""
     if "target_5d" in frame:
         return frame["target_5d"]
     ordered = frame.sort_values(["ticker", "date"]).copy()
@@ -740,6 +925,16 @@ def derive_target_5d(frame: pd.DataFrame) -> pd.Series:
         - 1.0
     )
     return forward.reindex(frame.index)
+
+
+def derive_execution_target_5d(frame: pd.DataFrame) -> pd.Series:
+    """Use the T+1 open to T+5 close return when the feature file has it."""
+    if "target_open_close_5d" in frame:
+        return frame["target_open_close_5d"]
+    # Older processed files cannot reconstruct the overnight gaps.  Fall back
+    # explicitly to the close-to-close label rather than silently inventing a
+    # different execution price.
+    return derive_target_5d(frame)
 
 
 def load_registry(path: Path) -> Dict[str, object]:
@@ -784,7 +979,7 @@ def library_factor(
     as_of: pd.Timestamp,
     interval_days: int,
 ) -> Dict[str, object]:
-    """Add lifecycle metadata to a factor accepted into the persistent library."""
+    """Add lifecycle metadata and append an auditable validation snapshot."""
     payload = dict(factor)
     payload["created_at"] = (
         previous.get("created_at", as_of.strftime("%Y-%m-%d")) if previous else as_of.strftime("%Y-%m-%d")
@@ -797,6 +992,19 @@ def library_factor(
         except (TypeError, ValueError):
             previous_count = 0
     payload["validation_count"] = previous_count + 1 if previous else 1
+    history = []
+    if previous and isinstance(previous.get("validation_history"), list):
+        history = list(previous["validation_history"])
+    history.append(
+        {
+            "validated_at": as_of.strftime("%Y-%m-%d"),
+            "accepted": True,
+            "direction": payload.get("direction"),
+            "horizon_metrics": payload.get("horizon_metrics", {}),
+        }
+    )
+    payload["validation_history"] = history
+    payload["last_validation"] = history[-1]
     payload["status"] = "active"
     payload["next_validation_at"] = (
         as_of + pd.Timedelta(days=interval_days)
@@ -981,12 +1189,10 @@ def build_accepted_signal(
         return pd.DataFrame(columns=["datetime", "instrument", "prediction"])
     scores = []
     for factor in accepted:
-        candidate = Candidate(
-            candidate_id=str(factor["candidate_id"]),
-            op=str(factor["op"]),
-            features=tuple(str(value) for value in factor["features"]),
-            hypothesis=str(factor.get("hypothesis", "")),
-        )
+        # Rehydrate the complete candidate, including expression_spec.  AST
+        # factors used to be downgraded to op='expression' here, which made
+        # accepted temporal factors fail while writing predictions.csv.
+        candidate = candidate_from_factor(factor)
         direction = int(factor["direction"])
         scores.append(
             direction * evaluate_candidate_score(candidate, ranked, frame, frame["date"])
@@ -1038,16 +1244,67 @@ def main() -> None:
         ),
     )
     parser.add_argument("--llm-count", type=int, default=40)
+    parser.add_argument(
+        "--llm-orchestrator",
+        choices=("direct", "langgraph"),
+        default="direct",
+        help="Candidate orchestration backend for LLM Miner agents",
+    )
+    parser.add_argument(
+        "--llm-agents",
+        type=int,
+        default=3,
+        help="Number of independent specialist Miner agents used with --llm-model",
+    )
     parser.add_argument("--max-pairs", type=int, default=60)
+    parser.add_argument(
+        "--novelty-baseline",
+        type=Path,
+        default=None,
+        help="Optional candidate JSON/AST library used as the external novelty baseline",
+    )
     parser.add_argument(
         "--max-temporal",
         type=int,
         default=20,
         help="Maximum deterministic candidates using the safe time-series DSL",
     )
-    parser.add_argument("--min-train-ic", type=float, default=0.010)
-    parser.add_argument("--min-valid-ic", type=float, default=0.005)
-    parser.add_argument("--min-valid-hit", type=float, default=0.51)
+    parser.add_argument(
+        "--min-train-ic",
+        type=float,
+        default=None,
+        help="Optional override for paper IC and Rank IC thresholds on training data",
+    )
+    parser.add_argument(
+        "--min-valid-ic",
+        type=float,
+        default=None,
+        help="Optional override for paper IC and Rank IC thresholds on validation data",
+    )
+    parser.add_argument(
+        "--min-train-icir",
+        type=float,
+        default=None,
+        help="Optional override for paper ICIR and Rank ICIR thresholds on training data",
+    )
+    parser.add_argument(
+        "--min-valid-icir",
+        type=float,
+        default=None,
+        help="Optional override for paper ICIR and Rank ICIR thresholds on validation data",
+    )
+    parser.add_argument(
+        "--min-train-hit",
+        type=float,
+        default=None,
+        help="Optional directional hit-ratio floor for training data (paper default: 0.60)",
+    )
+    parser.add_argument(
+        "--min-valid-hit",
+        type=float,
+        default=None,
+        help="Optional directional hit-ratio floor for validation data (paper default: 0.60)",
+    )
     parser.add_argument(
         "--min-coverage",
         type=float,
@@ -1070,15 +1327,28 @@ def main() -> None:
 
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
     frame["target_5d"] = derive_target_5d(frame)
+    has_execution_target_5d = "target_open_close_5d" in frame
+    frame["target_open_close_5d"] = derive_execution_target_5d(frame)
     frame["one_day_reversal"] = -frame["return_1d"]
     available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
+    # The signal is generated at T close and traded at T+1 open.  Use the
+    # execution-aligned labels throughout Miner; the 5-day label is T+1 open
+    # to T+5 close.  Legacy files fall back to close-to-close target_5d.
+    one_day_target_column = (
+        "target_open_close" if "target_open_close" in frame else "target_1d"
+    )
+    five_day_target_column = "target_open_close_5d"
     # Keep rows whose 1-day label is valid even when the 5-day label is not
     # yet available at the end of the file; the horizon evaluator handles it.
     # Do not drop every feature here: candidate-level missing values must be
     # visible to the coverage metric.
-    frame = frame.dropna(subset=["target_1d"]).reset_index(drop=True)
+    frame = frame.dropna(subset=[one_day_target_column]).reset_index(drop=True)
     dates = frame["date"]
-    targets = {1: frame["target_1d"], 5: frame["target_5d"]}
+    targets = {1: frame[one_day_target_column], 5: frame[five_day_target_column]}
+    target_sources = {
+        "1d": one_day_target_column,
+        "5d": "target_open_close_5d" if has_execution_target_5d else "target_5d_fallback",
+    }
 
     train_mask = dates.dt.year <= 2022
     valid_mask = dates.dt.year == 2023
@@ -1088,16 +1358,36 @@ def main() -> None:
         candidates = load_candidates(args.candidate_file, available)
         generator = "external_json"
     elif args.llm_model:
-        candidates = generate_llm_candidates(
-            args.llm_model,
-            available,
-            build_market_context(frame, train_mask),
-            args.llm_count,
-        )
-        generator = f"llm:{args.llm_model}"
+        if args.llm_agents < 1:
+            parser.error("--llm-agents must be positive")
+        market_context = build_market_context(frame, train_mask)
+        if args.llm_orchestrator == "langgraph":
+            try:
+                from langgraph_miner import generate_langgraph_candidates
+
+                candidates = generate_langgraph_candidates(
+                    args.llm_model,
+                    available,
+                    market_context,
+                    args.llm_count,
+                    args.llm_agents,
+                )
+            except (ImportError, RuntimeError) as exc:
+                parser.error(str(exc))
+            generator = f"llm_langgraph:{args.llm_model}:{args.llm_agents}"
+        else:
+            candidates = generate_llm_candidate_cluster(
+                args.llm_model,
+                available,
+                market_context,
+                args.llm_count,
+                args.llm_agents,
+            )
+            generator = f"llm_cluster:{args.llm_model}:{args.llm_agents}"
     else:
         candidates = template_candidates(available, args.max_pairs, args.max_temporal)
         generator = "template_v1"
+    generated_candidates = list(candidates)
     generated_candidate_count = len(candidates)
 
     # Retain valid factors from the previous library even if the current
@@ -1114,6 +1404,20 @@ def main() -> None:
             continue
         candidate_by_id.setdefault(previous_candidate.candidate_id, previous_candidate)
     candidates = list(candidate_by_id.values())
+    previous_candidates = []
+    for factor in previous_factors:
+        if not isinstance(factor, dict):
+            continue
+        try:
+            previous_candidates.append(candidate_from_factor(factor))
+        except (TypeError, ValueError):
+            continue
+    novelty_baseline = (
+        load_candidates(args.novelty_baseline, available)
+        if args.novelty_baseline
+        else previous_candidates
+    )
+    novelty = expression_novelty_report(generated_candidates, novelty_baseline)
     previous_by_id = {
         str(factor["candidate_id"]): factor
         for factor in previous_factors
@@ -1153,25 +1457,52 @@ def main() -> None:
         valid = horizon_metrics["1"]["validation"]
         backtest = horizon_metrics["1"]["backtest"]
         direction = 1 if train["mean_daily_rank_ic"] >= 0 else -1
+
+        def passes_gate(metric: Dict[str, float], horizon: int, split: str) -> bool:
+            thresholds = PAPER_HORIZON_THRESHOLDS[horizon]
+            ic_floor = (
+                args.min_train_ic if split == "train" and args.min_train_ic is not None
+                else args.min_valid_ic if split == "validation" and args.min_valid_ic is not None
+                else thresholds["ic"]
+            )
+            icir_floor = (
+                args.min_train_icir if split == "train" and args.min_train_icir is not None
+                else args.min_valid_icir if split == "validation" and args.min_valid_icir is not None
+                else thresholds["icir"]
+            )
+            hit_floor = (
+                args.min_train_hit if split == "train" and args.min_train_hit is not None
+                else args.min_valid_hit if split == "validation" and args.min_valid_hit is not None
+                else 0.5 + PAPER_MIN_HIT_DEVIATION
+            )
+            directional_hit = (
+                metric["rank_ic_hit_ratio"]
+                if direction > 0
+                else 1.0 - metric["rank_ic_hit_ratio"]
+            )
+            return (
+                direction * metric["mean_daily_ic"] > ic_floor
+                and direction * metric["mean_daily_rank_ic"] > ic_floor
+                and direction * metric["icir"] > icir_floor
+                and direction * metric["rank_icir"] > icir_floor
+                and directional_hit > hit_floor
+                and metric["coverage"] > args.min_coverage
+                and metric["turnover"] < args.max_turnover
+            )
+
+        gate_results = {
+            f"{split}_{horizon}d": passes_gate(
+                horizon_metrics[str(horizon)][split], horizon, split
+            )
+            for horizon in EVALUATION_HORIZONS
+            for split in ("train", "validation")
+        }
+        quality_ok = all(gate_results.values())
         directional_valid_ic = direction * valid["mean_daily_rank_ic"]
         directional_valid_hit = (
             valid["rank_ic_hit_ratio"] if direction > 0 else 1.0 - valid["rank_ic_hit_ratio"]
         )
-        quality_metrics = [
-            horizon_metrics[str(horizon)][split]
-            for horizon in EVALUATION_HORIZONS
-            for split in ("train", "validation")
-        ]
-        quality_ok = (
-            all(metric["coverage"] >= args.min_coverage for metric in quality_metrics)
-            and all(metric["turnover"] <= args.max_turnover for metric in quality_metrics)
-        )
-        accepted_flag = (
-            abs(train["mean_daily_rank_ic"]) >= args.min_train_ic
-            and directional_valid_ic >= args.min_valid_ic
-            and directional_valid_hit >= args.min_valid_hit
-            and quality_ok
-        )
+        accepted_flag = quality_ok
         row = {
             "candidate_id": candidate.candidate_id,
             "expression": candidate.expression,
@@ -1180,6 +1511,7 @@ def main() -> None:
             "hypothesis": candidate.hypothesis,
             "direction_from_train": direction,
             "accepted": accepted_flag,
+            "gate_results": gate_results,
             # Keep one-day aliases for backwards-compatible consumers.
             "train": train,
             "validation": valid,
@@ -1215,6 +1547,8 @@ def main() -> None:
     retained_without_revalidation: List[str] = []
     revalidated_factors: List[str] = []
     pruned_factors: List[str] = []
+    pruned_details: List[Dict[str, object]] = []
+    result_by_id = {str(result["candidate_id"]): result for result in results}
     for candidate in candidates:
         candidate_id = candidate.candidate_id
         previous = previous_by_id.get(candidate_id)
@@ -1242,6 +1576,14 @@ def main() -> None:
                 revalidated_factors.append(candidate_id)
         elif previous:
             pruned_factors.append(candidate_id)
+            retired = dict(previous)
+            retired["status"] = "retired"
+            retired["retired_at"] = as_of.strftime("%Y-%m-%d")
+            retired["retirement_reason"] = "failed_revalidation_gate"
+            current_result = result_by_id.get(candidate_id)
+            if current_result is not None:
+                retired["last_failed_metrics"] = current_result.get("horizons", {})
+            pruned_details.append(retired)
 
     accepted = active_factors
     accepted.sort(
@@ -1262,6 +1604,7 @@ def main() -> None:
         "retained_without_revalidation": retained_without_revalidation,
         "revalidated": revalidated_factors,
         "pruned": pruned_factors,
+        "pruned_details": pruned_details,
         "invalid_previous_factors": invalid_previous_factors,
     }
     baseline_horizons: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -1300,6 +1643,9 @@ def main() -> None:
     (args.output_dir / "candidate_metrics.json").write_text(
         json.dumps(results, indent=2, ensure_ascii=False, allow_nan=True) + "\n"
     )
+    (args.output_dir / "novelty.json").write_text(
+        json.dumps(novelty, indent=2, ensure_ascii=False, allow_nan=True) + "\n"
+    )
     (args.output_dir / "accepted_factors.json").write_text(
         json.dumps(accepted, indent=2, ensure_ascii=False, allow_nan=True) + "\n"
     )
@@ -1317,6 +1663,26 @@ def main() -> None:
         )
         + "\n"
     )
+    run_history = previous_registry.get("run_history", [])
+    if not isinstance(run_history, list):
+        run_history = []
+    run_history = list(run_history)
+    run_history.append(
+        {
+            "as_of": maintenance["as_of"],
+            "generator": generator,
+            "generated_candidate_count": generated_candidate_count,
+            "candidate_count": len(candidates),
+            "accepted_count": len(accepted),
+            "revalidated": revalidated_factors,
+            "pruned": pruned_factors,
+            "target_sources": target_sources,
+        }
+    )
+    retired_history = previous_registry.get("retired_factors", [])
+    if not isinstance(retired_history, list):
+        retired_history = []
+    retired_history = list(retired_history) + pruned_details
     registry_path.write_text(
         json.dumps(
             {
@@ -1337,17 +1703,26 @@ def main() -> None:
                     "train_end": "2022-12-30",
                     "validation": "2023",
                     "holdout": "2024-2026",
-                    "min_train_abs_rank_ic": args.min_train_ic,
-                    "min_validation_directional_rank_ic": args.min_valid_ic,
-                    "min_validation_hit_ratio": args.min_valid_hit,
+                    "paper_horizon_thresholds": PAPER_HORIZON_THRESHOLDS,
+                    "paper_min_hit_deviation": PAPER_MIN_HIT_DEVIATION,
+                    "min_train_ic_override": args.min_train_ic,
+                    "min_validation_ic_override": args.min_valid_ic,
+                    "min_train_icir_override": args.min_train_icir,
+                    "min_validation_icir_override": args.min_valid_icir,
+                    "min_train_hit_override": args.min_train_hit,
+                    "min_validation_hit_override": args.min_valid_hit,
                     "min_coverage": args.min_coverage,
                     "max_turnover": args.max_turnover,
                     "evaluation_horizons": list(EVALUATION_HORIZONS),
+                    "target_sources": target_sources,
                 },
                 "baseline": baseline_metrics,
                 "baseline_horizons": baseline_horizons,
                 "maintenance": maintenance,
                 "accepted_factors": accepted,
+                "run_history": run_history,
+                "retired_factors": retired_history,
+                "novelty": novelty,
             },
             indent=2,
             ensure_ascii=False,
@@ -1385,13 +1760,14 @@ def main() -> None:
         "",
         "## 基线",
         "",
-        "| split | Rank IC | Rank ICIR | Hit Ratio | Coverage | Turnover | Top/Bottom spread |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| split | IC | ICIR | Rank IC | Rank ICIR | Hit Ratio | Coverage | Turnover | Top/Bottom spread |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for split in ("train", "validation", "backtest"):
         metric = baseline_metrics[split]
         report_lines.append(
-            f"| {split} | {metric['mean_daily_rank_ic']:.6f} | {metric['rank_icir']:.4f} | "
+            f"| {split} | {metric['mean_daily_ic']:.6f} | {metric['icir']:.4f} | "
+            f"{metric['mean_daily_rank_ic']:.6f} | {metric['rank_icir']:.4f} | "
             f"{metric['rank_ic_hit_ratio']:.3f} | {metric['coverage']:.3f} | "
             f"{metric['turnover']:.3f} | {metric['mean_top_bottom_decile_spread']:.6f} |"
         )
@@ -1400,15 +1776,16 @@ def main() -> None:
             "",
             "## 多周期质量诊断（基线）",
             "",
-            "| horizon | split | Rank IC | Rank ICIR | Coverage | Turnover |",
-            "| ---: | --- | ---: | ---: | ---: | ---: |",
+            "| horizon | split | IC | ICIR | Rank IC | Rank ICIR | Coverage | Turnover |",
+            "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for horizon in EVALUATION_HORIZONS:
         for split in ("train", "validation", "backtest"):
             metric = baseline_horizons[str(horizon)][split]
             report_lines.append(
-                f"| {horizon}d | {split} | {metric['mean_daily_rank_ic']:.6f} | "
+                f"| {horizon}d | {split} | {metric['mean_daily_ic']:.6f} | "
+                f"{metric['icir']:.4f} | {metric['mean_daily_rank_ic']:.6f} | "
                 f"{metric['rank_icir']:.4f} | {metric['coverage']:.3f} | {metric['turnover']:.3f} |"
             )
     report_lines.extend(["", "## 通过验证的因子（按验证集方向调整后的 Rank IC 排序）", ""])

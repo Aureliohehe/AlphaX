@@ -4,8 +4,8 @@
 
 1. 从现有技术特征 schema 生成安全的候选因子表达式；
 2. 逐日横截面 RankNorm；
-3. 计算训练、验证和留出回测的 Rank IC、Rank ICIR、Hit Ratio、Top/Bottom spread；
-4. 通过训练集方向和验证集准入门槛后写入因子注册表。
+3. 计算训练、验证和留出回测的 IC、ICIR、Rank IC、Rank ICIR、Hit Ratio、Coverage、Turnover 和 Top/Bottom spread；
+4. 按论文 Miner 的 1 日/5 日质量门槛，通过训练集和验证集后写入因子注册表。
 
 `return_1d` 与 `one_day_reversal` 数学上完全等价，因此不进入候选池，只作为简单反转基线。
 
@@ -38,6 +38,7 @@ quant-method/machine-learn/data/qlib/alphacrafter_miner_lite/
 - `registry.json`：因子注册表和维护状态快照
 - `factor_library.json`：持久化的活跃因子库
 - `report.md`：本轮报告
+- `novelty.json`：候选因子结构多样性和相对历史因子的新颖性
 
 当前时间切分为：训练集 2016–2022、验证集 2023、留出回测 2024–2026。验证集用于准入，留出回测只用于最终报告。
 
@@ -52,7 +53,7 @@ conda run -n tradingagents python quant-method/machine-learn/qlib_portfolio_back
   --output-dir quant-method/machine-learn/data/qlib/portfolio_backtest_miner_lite_drop10
 ```
 
-结果写入 `portfolio_backtest_miner_lite_drop10/`。当前留出回测累计收益 **26.53%**、年化收益 **11.61%**、Sharpe **0.61**、最大回撤 **-24.91%**；相对同口径等权基准低 **13.72 个百分点**。该组合仍沿用 Miner 的 `target_1d` 选因子逻辑，而实际在次日开盘成交，因此结果是无前视但标签与执行时点不完全匹配的保守测试。
+结果写入 `portfolio_backtest_miner_lite_drop10/`。当前留出回测累计收益 **26.53%**、年化收益 **11.61%**、Sharpe **0.61**、最大回撤 **-24.91%**；相对同口径等权基准低 **13.72 个百分点**。Miner 和 Screener 默认使用 `target_open_close`（T+1 开盘到收盘）进行因子评估，和 Trader 的执行时点一致；旧版特征文件会明确回退到 close-to-close 标签。
 
 已进一步完成嵌套滚动因子准入：训练集确定方向，前一年度验证集选择因子数量和净收益，后续年度只做前向评估，结果见 [`MINER_WALK_FORWARD.md`](MINER_WALK_FORWARD.md)。滚动版本最终留出收益为 **25.55%**，相对基准低 **14.69 个百分点**，暂不建议启用 Miner-lite 作为默认策略。
 
@@ -78,9 +79,9 @@ python3 quant-method/alphacrafter/miner_lite.py \
   --candidate-file candidates_from_llm.json
 ```
 
-当前允许的操作是 `feature`、`difference` 和 `sum`，避免执行任意 LLM 代码。
+候选可以使用安全 AST 表达式；所有表达式都会经过 schema、深度和窗口校验，避免执行任意 LLM 代码。启用 LLM 时默认运行 3 个专业 Miner agent，分别关注动量/反转、波动/成交量和复合信号，最后按表达式去重。
 
-当前验证器同时评估 1 日和 5 日前瞻收益，并记录 Rank IC、Rank ICIR、Hit Ratio、Coverage 和横截面排名 Turnover。默认准入质量约束为 Coverage 不低于 0.90、Turnover 不高于 0.40，可通过以下参数调整：
+当前验证器同时评估 1 日和 5 日前瞻收益，并记录 IC、ICIR、Rank IC、Rank ICIR、Hit Ratio、Coverage 和横截面排名 Turnover。默认准入门槛遵循论文：1 日 IC/Rank IC > 0.015、ICIR/Rank ICIR > 0.20；5 日对应阈值为 0.025/0.25；方向调整后的 Hit Ratio > 0.60、Coverage > 0.90、Turnover < 0.40。可通过 `--min-train-ic`、`--min-valid-ic` 等参数显式覆盖 IC 门槛。
 
 ```bash
 python3 quant-method/alphacrafter/miner_lite.py \
@@ -113,7 +114,18 @@ python3 quant-method/alphacrafter/miner_lite.py \
   --llm-count 40
 ```
 
-也支持 `deepseek/deepseek-chat`、`deepseek-reasoner`。其他模型名仍通过 LiteLLM 调用，例如：
+也支持 `deepseek/deepseek-chat`、`deepseek-reasoner`。可用 `--llm-agents` 调整专业 agent 数量。默认的 `direct` 后端顺序调用 Agent；安装 LangGraph 后可以用 `Send` 做并行 fan-out/fan-in：
+
+```bash
+python3 -m pip install -r quant-method/alphacrafter/requirements.txt
+python3 quant-method/alphacrafter/miner_lite.py \
+  --llm-model deepseek-chat \
+  --llm-orchestrator langgraph \
+  --llm-agents 3 \
+  --llm-count 40
+```
+
+LangGraph 只负责候选生成编排；候选返回后仍经过相同的 AST 校验、去重、IC/ICIR 准入和因子库维护。其他模型名仍通过 LiteLLM 调用，例如：
 
 ```bash
 python3 -m pip install litellm
@@ -123,7 +135,19 @@ python3 quant-method/alphacrafter/miner_lite.py \
   --llm-count 40
 ```
 
-默认不调用外部模型，使用可复现的模板生成器。API key 只从环境变量读取，不会写入输出文件。
+默认不调用外部模型，使用可复现的模板生成器。API key 只从环境变量读取，不会写入输出文件。因子库现在保存每次再验证的 `validation_history`，注册表保存 `run_history` 和淘汰因子的最后失败指标。
+
+## 扩展基本面和新闻数据
+
+`build_features.py` 支持可选的 point-in-time CSV 面板，必须包含 `ticker` 和 `available_date`（没有时才使用 `date`）。数据只通过 as-of backward join 合并，不会使用发布日期之后的信息：
+
+```bash
+python3 quant-method/machine-learn/build_features.py \
+  --fundamentals fundamentals.csv \
+  --news news.csv
+```
+
+基本面字段会生成 `fundamental_*` 特征；新闻面板支持 `sentiment`/`sentiment_score`/`polarity`，生成每日 `news_count` 和 `news_sentiment`。缺失的外部数据不会被静默填充，最终由 Miner 的 Coverage 门槛处理。
 
 ## Screener-lite
 

@@ -12,8 +12,10 @@ from miner_lite import (
     META_COLUMNS,
     candidate_from_dict,
     derive_target_5d,
+    build_accepted_signal,
     evaluate_candidate_score,
     evaluate_score,
+    expression_novelty_report,
     library_factor,
     needs_revalidation,
 )
@@ -156,6 +158,17 @@ class MinerHarnessTests(unittest.TestCase):
         self.assertFalse(needs_revalidation(stored, pd.Timestamp("2020-03-30"), 90))
         self.assertTrue(needs_revalidation(stored, pd.Timestamp("2020-04-01"), 90))
         self.assertEqual(stored["validation_count"], 1)
+        self.assertEqual(len(stored["validation_history"]), 1)
+
+    def test_expression_novelty_report_is_structural(self) -> None:
+        report = expression_novelty_report(
+            [
+                Candidate("a", "feature", ("feature_a",), ""),
+                Candidate("b", "difference", ("feature_a", "feature_b"), ""),
+            ]
+        )
+        self.assertEqual(report["candidate_count"], 2)
+        self.assertGreater(report["internal_structural_diversity"], 0.0)
 
     def test_coverage_and_turnover_are_reported(self) -> None:
         dates = pd.Series(pd.to_datetime(["2020-01-02"] * 3 + ["2020-01-03"] * 3))
@@ -168,6 +181,36 @@ class MinerHarnessTests(unittest.TestCase):
         self.assertAlmostEqual(metric.coverage, 5.0 / 6.0)
         self.assertGreaterEqual(metric.turnover, 0.0)
         self.assertLessEqual(metric.turnover, 1.0)
+        self.assertTrue(hasattr(metric, "mean_daily_ic"))
+        self.assertTrue(hasattr(metric, "icir"))
+
+    def test_accepted_ast_factor_is_rehydrated_for_signal_building(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    ["2020-01-01"] * 3 + ["2020-01-02"] * 3 + ["2020-01-03"] * 3
+                ),
+                "ticker": ["A", "B", "C"] * 3,
+                "feature_x": [1.0, 2.0, 3.0, 2.0, 4.0, 8.0, 3.0, 6.0, 12.0],
+            }
+        )
+        ranked = frame[["feature_x"]].groupby(frame["date"]).rank(pct=True)
+        accepted = [
+            {
+                "candidate_id": "ts_delta_feature_x",
+                "op": "expression",
+                "features": ["feature_x"],
+                "expression_spec": {
+                    "op": "ts_delta",
+                    "feature": "feature_x",
+                    "window": 2,
+                },
+                "direction": 1,
+            }
+        ]
+        signal = build_accepted_signal(frame, ranked, accepted)
+        self.assertEqual(len(signal), len(frame))
+        self.assertTrue(signal["prediction"].notna().any())
 
 
 if __name__ == "__main__":

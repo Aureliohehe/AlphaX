@@ -77,7 +77,12 @@ def load_frame(path: Path, label_column: str = "target_1d") -> tuple[pd.DataFram
     # feature pool.  The open-to-close version matches next-open execution.
     frame["one_day_reversal"] = -frame["return_1d"]
     frame["open_to_close_reversal"] = -frame["open_close_return"]
-    target_columns = {"target_1d", "target_open_close"}
+    target_columns = {
+        "target_1d",
+        "target_5d",
+        "target_open_close",
+        "target_open_close_5d",
+    }
     feature_columns = [
         column
         for column in frame.columns
@@ -255,9 +260,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--label-column",
-        choices=["target_1d", "target_open_close"],
+        choices=["target_1d", "target_5d", "target_open_close", "target_open_close_5d"],
         default="target_1d",
-        help="Training target; target_open_close matches next-day open execution",
+        help="Training target; open-close targets align training with next-open execution",
     )
     parser.add_argument("--train-start", default=SPLITS["train"][0])
     parser.add_argument("--train-end", default=SPLITS["train"][1])
