@@ -102,7 +102,7 @@ python3 quant-method/alphacrafter/miner_lite.py \
 }
 ```
 
-允许的时间序列算子包括 `ts_mean`、`ts_std`、`ts_delta`、`ts_zscore`、`ts_rank` 和 `ts_corr`，窗口限制为 2–252 个交易日。模板模式可用 `--max-temporal` 控制时间序列候选数量。
+允许的时间序列算子包括 `ts_mean`、`ts_std`、`ts_sum`、`ts_min`、`ts_max`、`ts_quantile`、`ts_delta`、`ts_slope`、`ts_rsquare`、`ts_resi`、`ts_zscore`、`ts_rank` 和 `ts_corr`，另有 `abs`、`log` 及安全算术组合，窗口限制为 2–252 个交易日。模板模式可用 `--max-temporal` 控制时间序列候选数量。
 
 也可以显式启用 MinerLLM 作为候选生成器；LLM 只负责提出 JSON，后续验证和准入逻辑完全相同。DeepSeek 使用内置的 OpenAI-compatible 客户端，不需要安装 LiteLLM：
 
@@ -152,6 +152,18 @@ python3 quant-method/alphacrafter/screener_lite.py \
   --llm-relevance-model deepseek-chat \
   --llm-similarity-model deepseek-chat
 ```
+
+## Trader-lite
+
+Trader-lite 使用 Screener 的预测信号，搜索显式定义的长短组合配置（`beta`、`gamma`、`nlong`、`nshort`），在验证集选择配置，再对后续留出集做一次前向评估：
+
+```bash
+python3 quant-method/alphacrafter/trader_lite.py \
+  --predictions quant-method/machine-learn/data/qlib/alphacrafter_screener_lite/predictions.csv \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_trader_lite
+```
+
+输出 `positions.csv`、`portfolio_returns.csv` 和 `summary.json`。当前版本不执行 LLM 生成代码，也不连接券商账户，只做可审计的长短组合模拟。
 
 滚动因子准入可运行：
 

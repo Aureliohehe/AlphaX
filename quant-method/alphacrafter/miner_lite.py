@@ -43,7 +43,14 @@ EXPRESSION_OPS = {
     "rank",
     "ts_mean",
     "ts_std",
+    "ts_sum",
+    "ts_min",
+    "ts_max",
+    "ts_quantile",
     "ts_delta",
+    "ts_slope",
+    "ts_rsquare",
+    "ts_resi",
     "ts_zscore",
     "ts_rank",
     "ts_corr",
@@ -52,6 +59,8 @@ EXPRESSION_OPS = {
     "product",
     "divide",
     "negate",
+    "abs",
+    "log",
 }
 MAX_EXPRESSION_DEPTH = 4
 MIN_ROLLING_WINDOW = 2
@@ -126,7 +135,20 @@ def expression_features(node: Dict[str, object]) -> Tuple[str, ...]:
     if op == "ts_corr":
         values = node.get("features", [])
         return tuple(str(value) for value in values) if isinstance(values, list) else ()
-    if op in {"ts_mean", "ts_std", "ts_delta", "ts_zscore", "ts_rank"}:
+    if op in {
+        "ts_mean",
+        "ts_std",
+        "ts_sum",
+        "ts_min",
+        "ts_max",
+        "ts_quantile",
+        "ts_delta",
+        "ts_slope",
+        "ts_rsquare",
+        "ts_resi",
+        "ts_zscore",
+        "ts_rank",
+    }:
         return (str(node.get("feature", "")),)
     features: List[str] = []
     child = node.get("input")
@@ -160,11 +182,24 @@ def validate_expression(
             isinstance(value, str) and value for value in features
         ):
             raise ValueError("ts_corr requires exactly two feature names")
-    elif op in {"ts_mean", "ts_std", "ts_delta", "ts_zscore", "ts_rank"}:
+    elif op in {
+        "ts_mean",
+        "ts_std",
+        "ts_sum",
+        "ts_min",
+        "ts_max",
+        "ts_quantile",
+        "ts_delta",
+        "ts_slope",
+        "ts_rsquare",
+        "ts_resi",
+        "ts_zscore",
+        "ts_rank",
+    }:
         feature = node.get("feature")
         if not isinstance(feature, str) or not feature:
             raise ValueError(f"{op} requires one feature name")
-    elif op == "rank" or op == "negate":
+    elif op in {"rank", "negate", "abs", "log"}:
         child = node.get("input")
         if not isinstance(child, dict):
             raise ValueError(f"{op} requires an input expression")
@@ -186,6 +221,10 @@ def validate_expression(
             raise ValueError(
                 f"rolling window must be between {MIN_ROLLING_WINDOW} and {MAX_ROLLING_WINDOW}"
             )
+        if op == "ts_quantile":
+            quantile = node.get("quantile")
+            if not isinstance(quantile, (int, float)) or not 0 <= quantile <= 1:
+                raise ValueError("ts_quantile requires quantile between 0 and 1")
     if available is not None:
         missing = sorted(set(expression_features(node)) - set(available))
         if missing:
@@ -196,11 +235,29 @@ def render_expression(node: Dict[str, object]) -> str:
     op = str(node["op"])
     if op == "feature":
         return str(node["feature"])
-    if op == "rank" or op == "negate":
+    if op in {"rank", "negate", "abs", "log"}:
         rendered = render_expression(node["input"])
-        return f"rank({rendered})" if op == "rank" else f"-({rendered})"
-    if op in {"ts_mean", "ts_std", "ts_delta", "ts_zscore", "ts_rank"}:
+        if op == "rank":
+            return f"rank({rendered})"
+        if op == "negate":
+            return f"-({rendered})"
+        return f"{op}({rendered})"
+    if op in {
+        "ts_mean",
+        "ts_std",
+        "ts_sum",
+        "ts_min",
+        "ts_max",
+        "ts_delta",
+        "ts_slope",
+        "ts_rsquare",
+        "ts_resi",
+        "ts_zscore",
+        "ts_rank",
+    }:
         return f"{op}({node['feature']}, {node['window']})"
+    if op == "ts_quantile":
+        return f"ts_quantile({node['feature']}, {node['window']}, {node['quantile']})"
     if op == "ts_corr":
         return f"ts_corr({node['features'][0]}, {node['features'][1]}, {node['window']})"
     symbols = {"sum": "+", "difference": "-", "product": "*", "divide": "/"}
@@ -307,6 +364,12 @@ def temporal_candidates(available: Sequence[str], max_count: int) -> List[Candid
         ("ts_delta", "return_20d", 5),
         ("ts_mean", "volatility_20d", 20),
         ("ts_std", "return_5d", 20),
+        ("ts_sum", "return_5d", 20),
+        ("ts_min", "return_5d", 20),
+        ("ts_max", "return_5d", 20),
+        ("ts_slope", "return_20d", 20),
+        ("ts_rsquare", "return_20d", 20),
+        ("ts_resi", "return_20d", 20),
         ("ts_rank", "return_5d", 20),
     ]
     candidates: List[Candidate] = []
@@ -438,8 +501,9 @@ A candidate must be a JSON object with:
   features: the unique leaf features used by the expression
   expression: a safe expression object, for example:
     {{"op":"ts_zscore","feature":"return_5d","window":20}}
-  Allowed expression ops: feature, rank, ts_mean, ts_std, ts_delta, ts_zscore,
-    ts_rank, ts_corr, sum, difference, product, divide, negate.
+  Allowed expression ops: feature, rank, ts_mean, ts_std, ts_sum, ts_min,
+    ts_max, ts_quantile, ts_delta, ts_slope, ts_rsquare, ts_resi, ts_zscore,
+    ts_rank, ts_corr, sum, difference, product, divide, negate, abs, log.
   AST shapes are strict: rank/negate use `input`; sum/difference/product/divide
     use `inputs` with exactly two expression objects; ts_corr uses `features`
     with exactly two feature names; time-series unary ops use `feature` and `window`.
@@ -740,8 +804,34 @@ def library_factor(
     return payload
 
 
+def _rolling_slope(values: np.ndarray) -> float:
+    x = np.arange(len(values), dtype=float)
+    centered = x - x.mean()
+    denominator = np.dot(centered, centered)
+    return float(np.dot(centered, values - values.mean()) / denominator) if denominator else np.nan
+
+
+def _rolling_rsquare(values: np.ndarray) -> float:
+    slope = _rolling_slope(values)
+    x = np.arange(len(values), dtype=float)
+    intercept = values.mean() - slope * x.mean()
+    total = np.sum((values - values.mean()) ** 2)
+    return float(1.0 - np.sum((values - (intercept + slope * x)) ** 2) / total) if total else 0.0
+
+
+def _rolling_residual(values: np.ndarray) -> float:
+    slope = _rolling_slope(values)
+    x = np.arange(len(values), dtype=float)
+    intercept = values.mean() - slope * x.mean()
+    return float(values[-1] - (intercept + slope * x[-1]))
+
+
 def _time_series_values(
-    frame: pd.DataFrame, values: pd.Series, operation: str, window: int
+    frame: pd.DataFrame,
+    values: pd.Series,
+    operation: str,
+    window: int,
+    quantile: Optional[float] = None,
 ) -> pd.Series:
     ordered = pd.DataFrame(
         {"ticker": frame["ticker"], "date": frame["date"], "value": values},
@@ -752,8 +842,30 @@ def _time_series_values(
         transformed = grouped.transform(lambda series: series.rolling(window, min_periods=window).mean())
     elif operation == "ts_std":
         transformed = grouped.transform(lambda series: series.rolling(window, min_periods=window).std())
+    elif operation == "ts_sum":
+        transformed = grouped.transform(lambda series: series.rolling(window, min_periods=window).sum())
+    elif operation == "ts_min":
+        transformed = grouped.transform(lambda series: series.rolling(window, min_periods=window).min())
+    elif operation == "ts_max":
+        transformed = grouped.transform(lambda series: series.rolling(window, min_periods=window).max())
+    elif operation == "ts_quantile":
+        transformed = grouped.transform(
+            lambda series: series.rolling(window, min_periods=window).quantile(float(quantile))
+        )
     elif operation == "ts_delta":
         transformed = grouped.transform(lambda series: series - series.shift(window))
+    elif operation == "ts_slope":
+        transformed = grouped.transform(
+            lambda series: series.rolling(window, min_periods=window).apply(_rolling_slope, raw=True)
+        )
+    elif operation == "ts_rsquare":
+        transformed = grouped.transform(
+            lambda series: series.rolling(window, min_periods=window).apply(_rolling_rsquare, raw=True)
+        )
+    elif operation == "ts_resi":
+        transformed = grouped.transform(
+            lambda series: series.rolling(window, min_periods=window).apply(_rolling_residual, raw=True)
+        )
     elif operation == "ts_zscore":
         mean = grouped.transform(lambda series: series.rolling(window, min_periods=window).mean())
         std = grouped.transform(lambda series: series.rolling(window, min_periods=window).std())
@@ -797,9 +909,13 @@ def _evaluate_expression(
     if op == "rank":
         child = _evaluate_expression(node["input"], frame, dates)
         return child.groupby(dates, sort=False).rank(pct=True)
-    if op in {"ts_mean", "ts_std", "ts_delta", "ts_zscore", "ts_rank"}:
+    if op.startswith("ts_") and op != "ts_corr":
         return _time_series_values(
-            frame, frame[str(node["feature"])], op, int(node["window"])
+            frame,
+            frame[str(node["feature"])],
+            op,
+            int(node["window"]),
+            float(node["quantile"]) if op == "ts_quantile" else None,
         )
     if op == "ts_corr":
         left, right = node["features"]
@@ -811,6 +927,10 @@ def _evaluate_expression(
         )
     if op == "negate":
         return -_evaluate_expression(node["input"], frame, dates)
+    if op == "abs":
+        return _evaluate_expression(node["input"], frame, dates).abs()
+    if op == "log":
+        return np.log1p(_evaluate_expression(node["input"], frame, dates).clip(lower=-0.999999))
     left = _evaluate_expression(node["inputs"][0], frame, dates)
     right = _evaluate_expression(node["inputs"][1], frame, dates)
     if op == "sum":

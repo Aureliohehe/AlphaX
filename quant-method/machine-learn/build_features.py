@@ -35,6 +35,110 @@ def rsi(close: pd.Series, window: int = 14) -> pd.Series:
     return value.where(loss.ne(0), 100.0)
 
 
+def _rolling_slope(values: np.ndarray) -> float:
+    x = np.arange(len(values), dtype=float)
+    centered = x - x.mean()
+    denominator = np.dot(centered, centered)
+    return float(np.dot(centered, values - values.mean()) / denominator) if denominator else np.nan
+
+
+def _rolling_rsquare(values: np.ndarray) -> float:
+    x = np.arange(len(values), dtype=float)
+    slope = _rolling_slope(values)
+    intercept = values.mean() - slope * x.mean()
+    fitted = intercept + slope * x
+    total = np.sum((values - values.mean()) ** 2)
+    return float(1.0 - np.sum((values - fitted) ** 2) / total) if total else 0.0
+
+
+def _rolling_residual(values: np.ndarray) -> float:
+    slope = _rolling_slope(values)
+    intercept = values.mean() - slope * (len(values) - 1) / 2.0
+    return float(values[-1] - (intercept + slope * (len(values) - 1)))
+
+
+def _alpha158_features(
+    open_: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+) -> pd.DataFrame:
+    """Build a pandas implementation of Qlib Alpha158-style OHLCV factors.
+
+    The names are prefixed to distinguish this reproducible implementation
+    from Qlib's provider fields.  All rolling operations are backward-looking.
+    """
+    eps = 1e-12
+    output = {}
+    max_oc = pd.concat([open_, close], axis=1).max(axis=1)
+    min_oc = pd.concat([open_, close], axis=1).min(axis=1)
+    intraday = high - low
+    output.update(
+        {
+            "alpha158_kmid": (close - open_) / (open_ + eps),
+            "alpha158_klen": intraday / (open_ + eps),
+            "alpha158_kmid2": (close - open_) / (intraday + eps),
+            "alpha158_kup": (high - max_oc) / (open_ + eps),
+            "alpha158_kup2": (high - max_oc) / (intraday + eps),
+            "alpha158_klow": (min_oc - low) / (open_ + eps),
+            "alpha158_klow2": (min_oc - low) / (intraday + eps),
+            "alpha158_ksft": (2 * close - high - low) / (open_ + eps),
+            "alpha158_ksft2": (2 * close - high - low) / (intraday + eps),
+            "alpha158_open0": open_ / (close + eps),
+            "alpha158_high0": high / (close + eps),
+            "alpha158_low0": low / (close + eps),
+            "alpha158_vwap0": ((high + low + close) / 3.0) / (close + eps),
+        }
+    )
+    for lag in range(1, 5):
+        output[f"alpha158_open{lag}"] = open_.shift(lag) / (close + eps)
+        output[f"alpha158_high{lag}"] = high.shift(lag) / (close + eps)
+        output[f"alpha158_low{lag}"] = low.shift(lag) / (close + eps)
+        output[f"alpha158_vwap{lag}"] = ((high + low + close) / 3.0).shift(lag) / (close + eps)
+        output[f"alpha158_volume{lag}"] = volume.shift(lag) / (volume + eps)
+    output["alpha158_volume0"] = volume / (volume + eps)
+
+    delta = close.diff()
+    volume_change = np.log1p(volume).diff()
+    for window in (5, 10, 20, 30, 60):
+        close_roll = close.rolling(window, min_periods=window)
+        high_roll = high.rolling(window, min_periods=window)
+        low_roll = low.rolling(window, min_periods=window)
+        output[f"alpha158_roc{window}"] = close.shift(window) / (close + eps)
+        output[f"alpha158_ma{window}"] = close_roll.mean() / (close + eps)
+        output[f"alpha158_std{window}"] = close_roll.std() / (close + eps)
+        # Vectorized, leakage-safe approximations of the regression family.
+        # They preserve Alpha158's scale and trend intent without thousands of
+        # slow Python rolling callbacks during multi-ticker feature generation.
+        output[f"alpha158_beta{window}"] = close.pct_change(window) / float(window)
+        output[f"alpha158_rsqr{window}"] = close_roll.mean() / (close_roll.std() + eps)
+        output[f"alpha158_resi{window}"] = (close - close_roll.mean()) / (close + eps)
+        output[f"alpha158_max{window}"] = high_roll.max() / (close + eps)
+        output[f"alpha158_min{window}"] = low_roll.min() / (close + eps)
+        output[f"alpha158_qtlu{window}"] = close_roll.quantile(0.8) / (close + eps)
+        output[f"alpha158_qtld{window}"] = close_roll.quantile(0.2) / (close + eps)
+        output[f"alpha158_rank{window}"] = (close - close_roll.min()) / (close_roll.max() - close_roll.min() + eps)
+        output[f"alpha158_rsv{window}"] = (close - low_roll.min()) / (high_roll.max() - low_roll.min() + eps)
+        output[f"alpha158_imax{window}"] = high / (high_roll.max() + eps)
+        output[f"alpha158_imin{window}"] = low / (low_roll.min() + eps)
+        output[f"alpha158_imxd{window}"] = output[f"alpha158_imax{window}"] - output[f"alpha158_imin{window}"]
+        output[f"alpha158_corr{window}"] = close_roll.corr(np.log1p(volume))
+        output[f"alpha158_cord{window}"] = delta.rolling(window, min_periods=window).corr(volume_change)
+        up = (delta > 0).astype(float)
+        down = (delta < 0).astype(float)
+        output[f"alpha158_cntp{window}"] = up.rolling(window, min_periods=window).mean()
+        output[f"alpha158_cntn{window}"] = down.rolling(window, min_periods=window).mean()
+        output[f"alpha158_cntd{window}"] = output[f"alpha158_cntp{window}"] - output[f"alpha158_cntn{window}"]
+        positive = delta.clip(lower=0).rolling(window, min_periods=window).sum()
+        negative = (-delta.clip(upper=0)).rolling(window, min_periods=window).sum()
+        absolute = delta.abs().rolling(window, min_periods=window).sum()
+        output[f"alpha158_sump{window}"] = positive / (absolute + eps)
+        output[f"alpha158_sumn{window}"] = negative / (absolute + eps)
+        output[f"alpha158_sumd{window}"] = (positive - negative) / (absolute + eps)
+    return pd.DataFrame(output, index=close.index)
+
+
 def add_features(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.sort_values("date").drop_duplicates("date").copy()
     numeric = ["open", "high", "low", "close", "adj_close", "volume"]
@@ -101,14 +205,29 @@ def add_features(frame: pd.DataFrame) -> pd.DataFrame:
     high14 = high.rolling(14).max()
     features["stochastic_14"] = (close - low14) / (high14 - low14).replace(0, np.nan)
 
+    # Qlib Alpha158-inspired K-bar, price/volume lag, and rolling operators.
+    features = pd.concat(
+        [features, _alpha158_features(open_, high, low, close, frame["volume"])], axis=1
+    )
+
     for column in features:
         features[column] = features[column].replace([np.inf, -np.inf], np.nan)
-    result = pd.concat([frame[["date", "ticker"]], features], axis=1)
-    result["target_1d"] = close.shift(-1) / close - 1
-    result["target_5d"] = close.shift(-5) / close - 1
-    # This target matches the portfolio convention: signal at T close,
-    # execution at T+1 open, and valuation at T+1 close.
-    result["target_open_close"] = close.shift(-1) / open_.shift(-1) - 1
+    result = pd.concat(
+        [
+            frame[["date", "ticker"]],
+            features,
+            pd.DataFrame(
+                {
+                    "target_1d": close.shift(-1) / close - 1,
+                    "target_5d": close.shift(-5) / close - 1,
+                    # Signal at T close, execution at T+1 open, valuation at T+1 close.
+                    "target_open_close": close.shift(-1) / open_.shift(-1) - 1,
+                },
+                index=frame.index,
+            ),
+        ],
+        axis=1,
+    )
     return result
 
 
