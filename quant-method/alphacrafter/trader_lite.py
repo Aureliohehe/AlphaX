@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from temporal import label_end_dates, session_date
+from temporal import label_end_dates, label_end_source, read_calendar, session_date
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,10 @@ def validate_intervals(selection_start: str, selection_end: str, backtest_start:
         raise ValueError("Require selection_start <= selection_end < backtest_start <= backtest_end")
 
 
-def load_inputs(predictions_path: Path, feature_path: Path, as_of: Optional[str] = None) -> pd.DataFrame:
+def load_inputs(
+    predictions_path: Path, feature_path: Path, as_of: Optional[str] = None,
+    calendar_path: Optional[Path] = None, require_explicit_label_dates: bool = False,
+) -> pd.DataFrame:
     predictions = pd.read_csv(predictions_path)
     required = {"datetime", "instrument", "prediction"}
     missing = required - set(predictions.columns)
@@ -86,7 +89,10 @@ def load_inputs(predictions_path: Path, feature_path: Path, as_of: Optional[str]
     # dtype after merging, otherwise np.isfinite fails on an all-object column.
     predictions["prediction"] = pd.to_numeric(predictions["prediction"], errors="raise").astype(float)
     predictions = predictions[["date", "ticker", "prediction"]]
-    labels = pd.read_csv(feature_path, compression="infer", usecols=["date", "ticker", "target_open_close"], parse_dates=["date"])
+    wanted = {"date", "ticker", "target_open_close", "label_end_1d"}
+    labels = pd.read_csv(feature_path, compression="infer", usecols=lambda column: column in wanted, parse_dates=["date"])
+    if "target_open_close" not in labels:
+        raise ValueError("Trader requires target_open_close")
     for name, panel in (("predictions", predictions), ("features", labels)):
         if panel[["date", "ticker"]].isna().any().any() or panel.duplicated(["date", "ticker"]).any():
             raise ValueError(f"{name} must have unique, non-null date/ticker keys")
@@ -96,12 +102,21 @@ def load_inputs(predictions_path: Path, feature_path: Path, as_of: Optional[str]
         predictions = predictions.loc[predictions["date"] <= cutoff].copy()
     # Use the visible panel calendar for execution, never a stock's delayed
     # next quote. A per-stock label ending later is not next-session P&L.
-    labels["label_end_date"] = label_end_dates(labels, 1)
-    calendar = pd.Series(sorted(labels["date"].unique()))
+    reference = read_calendar(calendar_path) if calendar_path else None
+    labels["label_end_date"] = label_end_dates(labels, 1, require_explicit_label_dates, reference)
+    if calendar_path:
+        if not labels["date"].isin(reference).all():
+            raise ValueError("Feature signal dates outside the supplied execution calendar")
+        calendar = pd.Series(reference)
+    else:
+        calendar = pd.Series(sorted(labels["date"].unique()))
     next_session = dict(zip(calendar, calendar.shift(-1)))
     frame = labels.merge(predictions, on=["date", "ticker"], how="left", validate="one_to_one")
     frame["execution_date"] = frame["date"].map(next_session)
-    frame.loc[frame["label_end_date"].isna() | (frame["label_end_date"] != frame["execution_date"]), "target_open_close"] = np.nan
+    invalid = frame["label_end_date"].isna() | (frame["label_end_date"] != frame["execution_date"])
+    if as_of is not None:
+        invalid |= frame["label_end_date"] > session_date(as_of)
+    frame.loc[invalid, "target_open_close"] = np.nan
     return frame.sort_values(["date", "ticker"]).reset_index(drop=True)
 
 
@@ -244,13 +259,16 @@ def main() -> None:
     parser.add_argument("--cost-rate", type=float, default=0.0001, help="Cost per traded notional, charged at entry AND exit (S&P 500: 1bp)")
     parser.add_argument("--annual-risk-free-rate", type=float, default=0.0381)
     parser.add_argument("--initial-cash", type=float, default=1_000_000.0)
+    parser.add_argument("--calendar", type=Path, help="Reference market-session CSV; otherwise use observed feature dates")
+    parser.add_argument("--require-explicit-label-dates", action="store_true")
     args = parser.parse_args()
     try:
         validate_intervals(args.selection_start, args.selection_end, args.backtest_start, args.backtest_end)
         configs = parse_configs(args.configs)
     except ValueError as exc:
         parser.error(str(exc))
-    frame = load_inputs(args.predictions, args.input)
+    frame = load_inputs(args.predictions, args.input, calendar_path=args.calendar,
+                        require_explicit_label_dates=args.require_explicit_label_dates)
     validation_results = []
     for config in configs:
         report, _ = simulate(frame, config, args.selection_start, args.selection_end, args.cost_rate)
@@ -264,6 +282,9 @@ def main() -> None:
         "trader_version": "trader-lite-v2",
         "inputs": {"features": file_fingerprint(args.input), "predictions": file_fingerprint(args.predictions)},
         "runtime": {"numpy": np.__version__, "pandas": pd.__version__},
+        "label_end_source": label_end_source(frame, 1),
+        "execution_calendar": file_fingerprint(args.calendar) if args.calendar else "observed_feature_dates",
+        "require_explicit_label_dates": args.require_explicit_label_dates,
         "status": "selected" if selected else "no_feasible_strategy",
         "selected_config": asdict(config) if config else None,
         "selected_config_name": config.name if config else None,

@@ -1,6 +1,7 @@
 """End-to-end schedule, immutable selection, failure and temporal tests."""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 
 import pandas as pd
 
-from run_pipeline import build_plan, fingerprint_set, verify_fingerprints
+from run_pipeline import Pipeline, build_plan, fingerprint_set, verify_fingerprints
 from test_temporal import fixture_panel, run_cli
 from trader_lite import load_inputs, simulate, TraderConfig
 
@@ -72,6 +73,32 @@ class PlanTests(unittest.TestCase):
             path.write_text("changed")
             with self.assertRaisesRegex(ValueError, "changed"):
                 verify_fingerprints(pinned)
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_unplanned_snapshot_insertion_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "snapshots").mkdir()
+            path = root / "snapshots/2023-01-01.json"
+            path.write_text("{}")
+            pipeline = Pipeline(argparse.Namespace(output_dir=root), {"selection": {"end": "2023-01-31"}})
+            pipeline.round_results = [{"as_of": "2023-01-01"}]
+            pipeline.completed_artifacts = fingerprint_set([path])
+            pipeline.verify_archive("selection")
+            (root / "snapshots/unplanned.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "archive differs"):
+                pipeline.verify_archive("selection")
+
+    def test_known_future_snapshot_cannot_enter_selection_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "snapshots").mkdir()
+            (root / "snapshots/2023-02-01.json").write_text("{}")
+            pipeline = Pipeline(argparse.Namespace(output_dir=root), {"selection": {"end": "2023-01-31"}})
+            pipeline.round_results = [{"as_of": "2023-02-01"}]
+            with self.assertRaisesRegex(ValueError, "beyond this phase"):
+                pipeline.verify_archive("selection")
 
 
 class PipelineIntegrationTests(unittest.TestCase):

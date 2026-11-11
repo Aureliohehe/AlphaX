@@ -11,7 +11,19 @@ Miner Harness 不依赖 LLM 即可运行：
 
 `return_1d` 与 `one_day_reversal` 数学上完全等价，因此不进入候选池，只作为简单反转基线。
 
-## 运行
+## 自动滚动实验
+
+`run_pipeline.py` 已串起按日期维护 Miner、Screener 历史回放、独立 Trader 验证和冻结后的留出评估，详见 [`PIPELINE.md`](PIPELINE.md)。先检查计划：
+
+```bash
+python3 quant-method/alphacrafter/run_pipeline.py \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_pipeline_pit \
+  --dry-run
+```
+
+默认每 90 个日历日维护，准入窗口为最近 252 个交易日；Trader 选择文件先冻结，才开始生成留出期快照。输出目录不能复用，失败保留日志，不自动恢复。旧缓存未覆盖默认完整窗口时会明确失败，需要重建数据或显式缩短实验范围。
+
+## 单轮 Miner
 
 在项目根目录执行：
 

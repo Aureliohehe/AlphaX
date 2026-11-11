@@ -1,17 +1,25 @@
 """Shared point-in-time boundaries for Miner admission and Screener replay.
 
-Dates denote information available at that session's close. Label end dates
-are inferred per instrument, matching the feature builder's shift(-h) labels.
-Legacy panels with removed rows can over-purge; exact raw-calendar provenance
-is not recoverable from such files and must not be silently invented.
+Dates denote information available at that session's close. Prefer explicit
+label dates saved from raw quotes before feature filtering. Legacy inference
+is only a documented compatibility path and can over-purge filtered panels.
 """
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+
+# The repository uses standalone scripts in sibling, hyphenated directories.
+# Keep the data contract shared with feature generation and ML consumers.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "machine-learn"))
+from data_contract import (  # noqa: E402
+    LABEL_END_COLUMNS, META_COLUMNS, calendar_audit, is_feature_column,
+    label_end_source, read_calendar, resolve_label_ends,
+)
 
 TEMPORAL_POLICY_VERSION = "label-end-v1"
 
@@ -33,11 +41,11 @@ def visible_panel(frame: pd.DataFrame, as_of: object) -> pd.DataFrame:
     return visible
 
 
-def label_end_dates(frame: pd.DataFrame, horizon: int) -> pd.Series:
-    if horizon < 1:
-        raise ValueError("Label horizon must be positive")
-    ordered = frame.sort_values(["ticker", "date"])
-    return ordered.groupby("ticker", sort=False)["date"].shift(-horizon).reindex(frame.index)
+def label_end_dates(
+    frame: pd.DataFrame, horizon: int, require_explicit: bool = False,
+    calendar: Optional[pd.DatetimeIndex] = None,
+) -> pd.Series:
+    return resolve_label_ends(frame, horizon, require_explicit, calendar)
 
 
 def validate_windows(windows: Dict[str, Tuple[str, str]]) -> None:

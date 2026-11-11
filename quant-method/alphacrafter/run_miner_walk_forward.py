@@ -19,6 +19,7 @@ import pandas as pd
 from miner_lite import (
     BASELINE_FEATURES,
     META_COLUMNS,
+    is_feature_column,
     Candidate,
     evaluate_candidate_score,
     template_candidates,
@@ -213,7 +214,7 @@ def main() -> None:
     args = parser.parse_args()
 
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
-    available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
+    available = [column for column in frame.columns if is_feature_column(column) and column not in BASELINE_FEATURES]
     frame = frame.dropna(subset=available + ["target_open_close"]).reset_index(drop=True)
     dates = frame["date"]
     target = frame["target_open_close"]

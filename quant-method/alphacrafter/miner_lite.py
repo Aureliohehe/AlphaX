@@ -27,21 +27,12 @@ import numpy as np
 import pandas as pd
 
 from temporal import (
-    TEMPORAL_POLICY_VERSION, label_end_dates, purged_mask, session_date,
-    validate_previous_registry, validate_windows, visible_panel, write_snapshot,
+    TEMPORAL_POLICY_VERSION, META_COLUMNS, is_feature_column, label_end_dates, label_end_source, purged_mask, session_date,
+    read_calendar, validate_previous_registry, validate_windows, visible_panel, write_snapshot,
 )
 
 
 BASELINE_FEATURES = {"return_1d", "one_day_reversal"}
-META_COLUMNS = {
-    "date",
-    "ticker",
-    "target_1d",
-    "target_5d",
-    "target_open_close",
-    "target_open_close_5d",
-    "split",
-}
 EVALUATION_HORIZONS = (1, 5)
 # Thresholds from AlphaCrafter Algorithm 1.  They apply to both the
 # training and validation windows used by this implementation.
@@ -920,6 +911,8 @@ def derive_target_5d(frame: pd.DataFrame) -> pd.Series:
     """Derive a five-session close-to-close forward return for legacy files."""
     if "target_5d" in frame:
         return frame["target_5d"]
+    if "label_end_5d" in frame:
+        raise ValueError("Explicit-date panels must supply target_5d; cannot reconstruct raw labels from filtered feature rows")
     ordered = frame.sort_values(["ticker", "date"]).copy()
     forward = (1.0 + ordered["return_1d"]).groupby(ordered["ticker"], sort=False).transform(
         lambda values: values.shift(-1)
@@ -1241,6 +1234,8 @@ def main() -> None:
         help="Information cutoff at session close; future rows and unsettled labels are invisible",
     )
     parser.add_argument("--snapshot-dir", type=Path, default=None, help="Write-once archive; defaults to <output-dir>/snapshots")
+    parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy feature-row label-date inference")
+    parser.add_argument("--calendar", type=Path, help="Reference session CSV; validate label horizons against market sessions")
     parser.add_argument("--train-start", default="2016-01-04")
     parser.add_argument("--train-end", default="2022-12-30")
     parser.add_argument("--validation-start", default="2023-01-03")
@@ -1347,6 +1342,12 @@ def main() -> None:
         validate_windows(windows)
         as_of = session_date(args.as_of if args.as_of else frame["date"].max())
         validate_previous_registry(previous_registry, as_of)
+        if previous_registry and args.require_explicit_label_dates:
+            previous_sources = previous_registry.get("temporal_audit", {}).get("label_end_source", {})
+            if not isinstance(previous_sources, dict) or any(
+                previous_sources.get(str(h)) != "explicit_raw_label_dates" for h in EVALUATION_HORIZONS
+            ):
+                raise ValueError("Strict label-date mode cannot inherit a registry with legacy/unknown label-date provenance; use a fresh experiment")
         frame = visible_panel(frame, as_of)
     except ValueError as exc:
         parser.error(str(exc))
@@ -1354,7 +1355,7 @@ def main() -> None:
     has_execution_target_5d = "target_open_close_5d" in frame
     frame["target_open_close_5d"] = derive_execution_target_5d(frame)
     frame["one_day_reversal"] = -frame["return_1d"]
-    available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
+    available = [column for column in frame.columns if is_feature_column(column) and column not in BASELINE_FEATURES]
     # The signal is generated at T close and traded at T+1 open.  Use the
     # execution-aligned labels throughout Miner; the 5-day label is T+1 open
     # to T+5 close.  Legacy files fall back to close-to-close target_5d.
@@ -1363,10 +1364,11 @@ def main() -> None:
     )
     five_day_target_column = "target_open_close_5d"
     # Never use future-label missingness to decide the signal-time universe.
-    # Truncate first, then infer per-instrument label maturity. Stored forward
-    # targets in the last h rows may contain future values: censor them too.
+    # Truncate features first, then resolve maturity from explicit raw label
+    # dates (or an auditable legacy fallback). Censor all unsettled targets.
     dates = frame["date"]
-    label_ends = {h: label_end_dates(frame, h) for h in EVALUATION_HORIZONS}
+    reference_calendar = read_calendar(args.calendar) if args.calendar else None
+    label_ends = {h: label_end_dates(frame, h, args.require_explicit_label_dates, reference_calendar) for h in EVALUATION_HORIZONS}
     for column, horizon in (("target_1d", 1), ("target_open_close", 1),
                             ("target_5d", 5), ("target_open_close_5d", 5)):
         if column in frame:
@@ -1387,8 +1389,11 @@ def main() -> None:
         "policy_version": TEMPORAL_POLICY_VERSION,
         "as_of": str(as_of.date()),
         "visible_rows": len(frame),
+        "visible_first_session": str(dates.min().date()),
         "visible_last_session": str(dates.max().date()),
-        "label_end_source": "per-instrument shift(-h) on visible feature rows; filtered legacy panels may over-purge",
+        "label_end_source": {str(h): label_end_source(frame, h) for h in EVALUATION_HORIZONS},
+        "require_explicit_label_dates": args.require_explicit_label_dates,
+        "reference_calendar": str(args.calendar) if args.calendar else None,
         "windows": windows,
         "segments": {
             str(h): {name: {

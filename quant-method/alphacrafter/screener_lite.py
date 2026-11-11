@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from temporal import (
-    active_factors_at, label_end_dates, load_timeline, session_date, snapshot_date, visible_panel,
+    active_factors_at, is_feature_column, label_end_dates, label_end_source, load_timeline, read_calendar, session_date, snapshot_date, visible_panel,
 )
 
 from miner_lite import (
@@ -410,6 +410,8 @@ def main() -> None:
     parser.add_argument("--allow-retrospective-library", action="store_true", help="DIAGNOSTIC ONLY: allow a static legacy/future library on all historical dates")
     parser.add_argument("--as-of", default=None, help="Last visible feature session; defaults to input maximum date")
     parser.add_argument("--signal-start", default=None, help="First output signal date; earlier feature/IC history is retained")
+    parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy inferred label maturity")
+    parser.add_argument("--calendar", type=Path, help="Reference session CSV for label horizon validation")
     parser.add_argument("--lookback-days", type=int, default=10)
     parser.add_argument(
         "--min-suitability",
@@ -444,14 +446,15 @@ def main() -> None:
     # complete feature universe, including the latest unlabelled session.
     as_of = session_date(args.as_of if args.as_of else frame["date"].max())
     frame = visible_panel(frame, as_of)
-    label_ends = label_end_dates(frame, 1)
-    frame.loc[label_ends.isna(), execution_target] = np.nan
+    reference_calendar = read_calendar(args.calendar) if args.calendar else None
+    label_ends = label_end_dates(frame, 1, args.require_explicit_label_dates, reference_calendar)
+    frame.loc[label_ends.isna() | (label_ends > as_of), execution_target] = np.nan
     label_available_dates = label_ends.groupby(frame["date"]).max()
     # A truncated/delisted instrument may have an unknown next quote. Do not
     # compute a deceptively 'complete' IC from the other instruments alone.
     unknown_end = label_ends.isna().groupby(frame["date"]).any()
     label_available_dates = label_available_dates.mask(unknown_end)
-    available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
+    available = [column for column in frame.columns if is_feature_column(column) and column not in BASELINE_FEATURES]
     ranked = frame[available].groupby(frame["date"], sort=False).rank(pct=True).astype("float32")
     dates = sorted(frame["date"].drop_duplicates())
     signal_start = session_date(args.signal_start) if args.signal_start else dates[0]
@@ -600,6 +603,9 @@ def main() -> None:
     summary = {
         "screener_version": "screener-lite-v3",
         "as_of": str(as_of.date()),
+        "label_end_source": label_end_source(frame, 1),
+        "require_explicit_label_dates": args.require_explicit_label_dates,
+        "reference_calendar": str(args.calendar) if args.calendar else None,
         "signal_start": str(signal_start.date()),
         "output_session_count": len(signal_dates),
         "library_scope": "retrospective_diagnostic" if args.allow_retrospective_library else "point_in_time_snapshots",

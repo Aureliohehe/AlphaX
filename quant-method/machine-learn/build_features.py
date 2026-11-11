@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+
+from data_contract import forward_labels, is_feature_column, read_calendar
 
 
 SPLITS = [
@@ -214,8 +218,11 @@ def add_features(
     frame: pd.DataFrame,
     fundamentals: Optional[pd.DataFrame] = None,
     news: Optional[pd.DataFrame] = None,
+    calendar: Optional[pd.DatetimeIndex] = None,
 ) -> pd.DataFrame:
-    frame = frame.sort_values("date").drop_duplicates("date").copy()
+    if frame["date"].isna().any() or frame["date"].duplicated().any() or frame["ticker"].nunique() != 1:
+        raise ValueError("Expected a single instrument with unique, non-null raw dates")
+    frame = frame.sort_values("date").copy()
     frame = _merge_asof_panel(frame, fundamentals, "fundamental_")
     frame = _merge_asof_panel(frame, news, "news_", aggregate_news=True)
     numeric = ["open", "high", "low", "close", "adj_close", "volume"]
@@ -298,18 +305,7 @@ def add_features(
         [
             frame[["date", "ticker"] + external_columns],
             features,
-            pd.DataFrame(
-                {
-                    "target_1d": close.shift(-1) / close - 1,
-                    "target_5d": close.shift(-5) / close - 1,
-                    # Signal at T close, execution at T+1 open.
-                    "target_open_close": close.shift(-1) / open_.shift(-1) - 1,
-                    # Execution-aligned five-session label: enter at T+1 open,
-                    # exit at T+5 close.
-                    "target_open_close_5d": close.shift(-5) / open_.shift(-1) - 1,
-                },
-                index=frame.index,
-            ),
+            forward_labels(frame["date"], close, open_, calendar),
         ],
         axis=1,
     )
@@ -322,6 +318,14 @@ def split_name(date: pd.Series) -> pd.Series:
     for name, start, end in SPLITS:
         output.loc[(parsed >= start) & (parsed <= end)] = name
     return output
+
+
+def fingerprint(path: Path) -> dict:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"path": str(path.resolve()), "sha256": digest.hexdigest(), "bytes": path.stat().st_size}
 
 
 def main() -> None:
@@ -348,14 +352,32 @@ def main() -> None:
         default=None,
         help="Optional CSV with ticker, available_date/date, and sentiment fields",
     )
+    parser.add_argument("--calendar", type=Path, help="Reference session CSV (date column); targets use market-session offsets")
+    parser.add_argument("--overwrite", action="store_true", help="Explicitly replace derived output and its sidecars, never source files")
     args = parser.parse_args()
+    calendar_path = args.output.with_name(args.output.name + ".calendar.csv")
+    manifest_path = args.output.with_name(args.output.name + ".manifest.json")
+    artifacts = [args.output, calendar_path, manifest_path]
+    if not args.overwrite and any(path.exists() for path in artifacts):
+        parser.error("Output/sidecar already exists; choose a new output or explicitly use --overwrite")
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    reference_calendar = read_calendar(args.calendar) if args.calendar else None
 
     fundamentals = pd.read_csv(args.fundamentals) if args.fundamentals else None
     news = pd.read_csv(args.news) if args.news else None
     input_files = sorted(args.input.glob("*.csv"))
     if not input_files:
         raise SystemExit("No per-ticker CSV files found in {}".format(args.input))
+    sources = input_files + [path for path in (args.calendar, args.fundamentals, args.news) if path]
+    if {path.resolve() for path in sources} & {path.resolve() for path in artifacts}:
+        parser.error("Derived output must not overwrite a source file")
+    # Never leave an old 'complete' manifest beside a failed replacement build.
+    for sidecar in (calendar_path, manifest_path):
+        if sidecar.exists():
+            sidecar.unlink()
+    source_records = [fingerprint(path) for path in sources]
+    raw_sessions = set()
+    first_output_date, last_output_date = None, None
 
     # Compute once to discover the feature schema, then stream each ticker into
     # one compressed CSV to keep peak memory bounded.
@@ -369,19 +391,10 @@ def main() -> None:
             text_output = __import__("io").TextIOWrapper(compressed, encoding="utf-8", newline="")
             for n, path in enumerate(input_files, 1):
                 frame = pd.read_csv(path, parse_dates=["date"])
-                result = add_features(frame, fundamentals=fundamentals, news=news)
+                raw_sessions.update(frame["date"].dropna())
+                result = add_features(frame, fundamentals=fundamentals, news=news, calendar=reference_calendar)
                 if not feature_columns:
-                    feature_columns = [
-                        c for c in result.columns
-                        if c not in (
-                            "date",
-                            "ticker",
-                            "target_1d",
-                            "target_5d",
-                            "target_open_close",
-                            "target_open_close_5d",
-                        )
-                    ]
+                    feature_columns = [c for c in result.columns if is_feature_column(c)]
                 # Keep final rows with unavailable forward labels: label
                 # availability is not an observable signal-time universe filter.
                 # Supervised training/evaluation must drop missing targets locally.
@@ -394,6 +407,9 @@ def main() -> None:
                 result = result.dropna(subset=technical_columns).copy()
                 result["split"] = split_name(result["date"])
                 result = result[result["split"] != "excluded"]
+                if not result.empty:
+                    first_output_date = min(first_output_date, result["date"].min()) if first_output_date is not None else result["date"].min()
+                    last_output_date = max(last_output_date, result["date"].max()) if last_output_date is not None else result["date"].max()
                 result.to_csv(text_output, index=False, header=not wrote_header)
                 wrote_header = True
                 total_rows += len(result)
@@ -401,6 +417,27 @@ def main() -> None:
                     print("[{}/{}] {} rows".format(n, len(input_files), total_rows), flush=True)
             text_output.flush()
 
+    for record in source_records:
+        if fingerprint(Path(record["path"]))["sha256"] != record["sha256"]:
+            raise ValueError(f"Source changed during feature construction: {record['path']}")
+    # Label dates were generated from raw prices BEFORE the filters above.
+    # Export the independent calendar too: feature filtering must not erase it.
+    output_calendar = reference_calendar if reference_calendar is not None else pd.DatetimeIndex(sorted(raw_sessions))
+    pd.DataFrame({"date": output_calendar}).to_csv(calendar_path, index=False)
+    manifest = {
+        "schema_version": "features-with-label-dates-v1", "status": "complete",
+        "label_end_columns": ["label_end_1d", "label_end_5d"],
+        "label_horizon_basis": "reference_market_sessions" if args.calendar else "per_instrument_raw_observations",
+        "calendar_kind": "provided_reference" if args.calendar else "observed_raw_union_not_exchange_verified",
+        "sources": source_records, "output": fingerprint(args.output), "calendar": fingerprint(calendar_path),
+        "generator": {"code": [fingerprint(Path(__file__)), fingerprint(Path(__file__).with_name("data_contract.py"))],
+                      "numpy": np.__version__, "pandas": pd.__version__},
+        "feature_rows": total_rows, "feature_columns": feature_columns,
+        "first_feature_date": str(first_output_date.date()) if first_output_date is not None else None,
+        "last_feature_date": str(last_output_date.date()) if last_output_date is not None else None,
+        "warnings": ["Calendar coverage does not certify point-in-time constituents or external-data publication timestamps"],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     print("Wrote {} rows to {}".format(total_rows, args.output))
     print("Features ({}): {}".format(len(feature_columns), ", ".join(feature_columns)))
 

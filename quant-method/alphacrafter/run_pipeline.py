@@ -19,7 +19,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 import pandas as pd
 
-from temporal import session_date, snapshot_date
+from temporal import LABEL_END_COLUMNS, calendar_audit, label_end_source, read_calendar, session_date, snapshot_date
 from trader_lite import (
     TraderConfig, file_fingerprint, is_feasible, load_inputs, parse_configs,
     select_configuration, simulate, summarize, validate_intervals,
@@ -162,6 +162,10 @@ class Pipeline:
         ]
         if self.args.candidate_file:
             arguments.extend(["--candidate-file", self.args.candidate_file])
+        if self.args.require_explicit_label_dates:
+            arguments.append("--require-explicit-label-dates")
+        if self.args.calendar:
+            arguments.extend(["--calendar", self.args.calendar])
         self.step(f"miner_{cutoff}", "miner_lite.py", arguments)
         snapshot = self.root / "snapshots" / f"{cutoff}.json"
         payload = json.loads(snapshot.read_text())
@@ -190,23 +194,44 @@ class Pipeline:
         self.completed_artifacts.update(fingerprint_set([snapshot, self.previous_registry]))
         self.event({"event": "snapshot_completed", **row})
 
+    def verify_archive(self, phase: str) -> None:
+        """Reject extra snapshots, not just modifications of known files."""
+        expected = {f"{row['as_of']}.json" for row in self.round_results}
+        actual = {path.name for path in (self.root / "snapshots").glob("*.json")}
+        if actual != expected:
+            raise ValueError("Snapshot archive differs from the committed/completed schedule")
+        if any(session_date(row["as_of"]) > session_date(self.plan[phase]["end"]) for row in self.round_results):
+            raise ValueError("Archive contains a snapshot beyond this phase cutoff")
+        verify_fingerprints(self.completed_artifacts)
+
     def screen(self, phase: str) -> Path:
+        self.verify_archive(phase)
         window = self.plan[phase]
         output = self.root / f"screener_{phase}"
-        self.step(f"screener_{phase}", "screener_lite.py", [
+        arguments = [
             "--input", self.args.input, "--library-history", self.root / "snapshots",
             "--signal-start", window["start"], "--as-of", window["end"],
             "--output-dir", output,
-        ])
+        ]
+        if self.args.require_explicit_label_dates:
+            arguments.append("--require-explicit-label-dates")
+        if self.args.calendar:
+            arguments.extend(["--calendar", self.args.calendar])
+        self.step(f"screener_{phase}", "screener_lite.py", arguments)
         registry = json.loads((output / "registry.json").read_text())
         if registry["library_scope"] != "point_in_time_snapshots":
             raise ValueError("Retrospective predictions cannot enter the pipeline")
+        if registry["as_of"] != window["end"] or registry["signal_start"] != window["start"]:
+            raise ValueError("Screener window differs from the committed schedule")
+        self.completed_artifacts.update(fingerprint_set([output / "registry.json", output / "predictions.csv"]))
         return output / "predictions.csv"
 
     def freeze_selection(self, predictions: Path) -> Path:
         self.stage = "trader_selection"
+        verify_fingerprints(self.completed_artifacts)
         window = self.plan["selection"]
-        frame = load_inputs(predictions, self.args.input, as_of=window["end"])
+        frame = load_inputs(predictions, self.args.input, as_of=window["end"], calendar_path=self.args.calendar,
+                            require_explicit_label_dates=self.args.require_explicit_label_dates)
         results = []
         destination = self.root / "trader"
         destination.mkdir()
@@ -227,6 +252,8 @@ class Pipeline:
             "cost_rate": self.args.cost_rate,
             "annual_risk_free_rate": self.args.annual_risk_free_rate,
             "initial_cash": self.args.initial_cash,
+            "label_end_source": label_end_source(frame, 1),
+            "calendar_sha256": file_fingerprint(self.args.calendar)["sha256"] if self.args.calendar else None,
             "prediction_sha256": file_fingerprint(predictions)["sha256"],
             "snapshot_hashes": {row["as_of"]: row["snapshot_sha256"] for row in self.round_results},
         }
@@ -242,7 +269,8 @@ class Pipeline:
         frozen = json.loads(selection.read_text())
         config = TraderConfig(**frozen["selected_config"]) if frozen["selected_config"] else None
         window = self.plan["holdout"]
-        frame = load_inputs(predictions, self.args.input, as_of=window["end"])
+        frame = load_inputs(predictions, self.args.input, as_of=window["end"], calendar_path=self.args.calendar,
+                            require_explicit_label_dates=self.args.require_explicit_label_dates)
         report, positions = simulate(frame, config, window["start"], window["end"], frozen["cost_rate"])
         report.to_csv(self.root / "trader" / "holdout_returns.csv")
         positions.to_csv(self.root / "trader" / "holdout_positions.csv", index=False)
@@ -253,13 +281,15 @@ class Pipeline:
             "selection_sha256": file_fingerprint(selection)["sha256"],
             "holdout_prediction_sha256": file_fingerprint(predictions)["sha256"],
             "maintenance_rounds": len(self.round_results),
+            "label_end_source": label_end_source(frame, 1),
+            "calendar_audit": self.plan["calendar_audit"],
             "holdout": metrics,
             "holdout_invested_days": int((report["selected_assets"] > 0).sum()),
             "rounds": self.round_results,
             "limitations": [
                 "Deterministic templates or externally supplied fixed candidates; no historical LLM workflow",
                 "Intraday Trader proxy, not the paper's persistent-holdings/margin exchange simulator",
-                "Observed feature calendar, not a verified exchange calendar or point-in-time membership universe",
+                "Calendar identity/authority and point-in-time constituent membership still require independent audit",
                 "Source labels and external candidate provenance require independent audit",
                 "Holdout factors adapt using already-revealed data under a precommitted policy; Trader parameters stay frozen",
             ],
@@ -269,8 +299,9 @@ class Pipeline:
         if self.root.exists() and (not self.root.is_dir() or any(self.root.iterdir())):
             raise ValueError("Output directory must be new or empty; completed/failed runs are never overwritten")
         self.root.mkdir(parents=True, exist_ok=True)
-        inputs = [self.args.input] + ([self.args.candidate_file] if self.args.candidate_file else [])
+        inputs = [self.args.input] + [path for path in (self.args.candidate_file, self.args.calendar) if path]
         code = [HERE / name for name in ("run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py", "temporal.py")]
+        code.append(HERE.parent / "machine-learn/data_contract.py")
         pinned = fingerprint_set(inputs + code)
         parameters = {key: str(value) if isinstance(value, Path) else value for key, value in vars(self.args).items()}
         write_json_new(self.root / "plan.json", self.plan)
@@ -279,6 +310,7 @@ class Pipeline:
             "runtime": {"python": sys.version, "numpy": np.__version__, "pandas": pd.__version__},
             "candidate_provenance": "External fixed hypotheses are user-attested, not certified point-in-time" if self.args.candidate_file else "Deterministic template generator",
         })
+        self.completed_artifacts.update(fingerprint_set([self.root / "plan.json", self.root / "manifest.json"]))
         try:
             for round_plan in self.plan["rounds"]:
                 if round_plan["phase"] == "selection":
@@ -295,12 +327,24 @@ class Pipeline:
             verify_fingerprints(self.completed_artifacts)
             pd.DataFrame(self.round_results).to_csv(self.root / "rounds.csv", index=False)
             write_json_new(self.root / "summary.json", summary)
-            write_json_new(self.root / "status.json", {"status": "completed"})
             self.event({"event": "completed"})
+            # This is the final commit marker. Never announce a successful
+            # status before the event log and result files have been written.
+            write_json_new(self.root / "status.json", {"status": "completed"})
             return summary
         except (Exception, KeyboardInterrupt) as exc:
-            self.event({"event": "failed", "stage": self.stage, "error": f"{type(exc).__name__}: {exc}"})
-            write_json_new(self.root / "status.json", {"status": "failed", "stage": self.stage, "error": f"{type(exc).__name__}: {exc}"})
+            failure = {"status": "failed", "stage": self.stage, "error": f"{type(exc).__name__}: {exc}"}
+            # A disk/logging failure must not mask the original stage failure
+            # with a secondary FileExistsError or replace an existing status.
+            try:
+                self.event({"event": "failed", **failure})
+            except OSError:
+                pass
+            if not (self.root / "status.json").exists():
+                try:
+                    write_json_new(self.root / "status.json", failure)
+                except OSError:
+                    pass
             raise
 
 
@@ -310,6 +354,8 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=base / "data/processed/sp500_features.csv.gz")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--candidate-file", type=Path, help="Fixed hypotheses decided before selection; no external LLM calls")
+    parser.add_argument("--calendar", type=Path, help="Reference date CSV: require complete feature sessions across the experiment")
+    parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy panels without label_end_1d/label_end_5d")
     parser.add_argument("--initial-as-of", default="2022-12-30")
     parser.add_argument("--train-start", default="2016-01-04")
     parser.add_argument("--selection-start", default="2023-01-03")
@@ -332,6 +378,13 @@ def main() -> None:
         args.input = args.input.resolve(strict=True)
         if args.candidate_file:
             args.candidate_file = args.candidate_file.resolve(strict=True)
+        if args.calendar:
+            args.calendar = args.calendar.resolve(strict=True)
+        if args.require_explicit_label_dates:
+            columns = pd.read_csv(args.input, nrows=0).columns
+            missing = set(LABEL_END_COLUMNS.values()) - set(columns)
+            if missing:
+                raise ValueError(f"Strict label-date mode requires {sorted(missing)}; rebuild features from raw prices")
         parse_configs(args.configs)
         if not np.isfinite(args.cost_rate) or args.cost_rate < 0:
             raise ValueError("cost-rate must be finite and non-negative")
@@ -346,6 +399,14 @@ def main() -> None:
         calendar = pd.read_csv(args.input, usecols=["date"], parse_dates=["date"])["date"].drop_duplicates()
         plan = build_plan(calendar, args.initial_as_of, args.train_start, args.selection_start, args.selection_end,
                           args.holdout_start, args.holdout_end, args.maintenance_days, args.admission_sessions, args.min_train_sessions)
+        if args.calendar:
+            audit = calendar_audit(calendar, read_calendar(args.calendar), args.train_start, args.holdout_end)
+            if not audit["matches_reference"]:
+                raise ValueError(f"Feature calendar mismatch: missing={audit['missing_sessions'][:10]}, unexpected={audit['unexpected_sessions'][:10]}")
+            plan["calendar_audit"] = audit
+        else:
+            plan["calendar_audit"] = {"mode": "observed_feature_sessions_only", "matches_reference": None}
+        plan["require_explicit_label_dates"] = args.require_explicit_label_dates
         if args.dry_run:
             print(json.dumps(plan, indent=2))
             return

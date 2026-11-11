@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from data_contract import is_feature_column
+
 
 # Qlib's XGBModel expects the second segment to be named ``valid``.
 SPLITS = {
@@ -77,17 +79,11 @@ def load_frame(path: Path, label_column: str = "target_1d") -> tuple[pd.DataFram
     # feature pool.  The open-to-close version matches next-open execution.
     frame["one_day_reversal"] = -frame["return_1d"]
     frame["open_to_close_reversal"] = -frame["open_close_return"]
-    target_columns = {
-        "target_1d",
-        "target_5d",
-        "target_open_close",
-        "target_open_close_5d",
-    }
     feature_columns = [
         column
         for column in frame.columns
         if (
-            column not in {"date", "ticker", "split"} | target_columns
+            is_feature_column(column)
             and (column != "open_to_close_reversal" or label_column == "target_open_close")
         )
     ]
