@@ -1,6 +1,8 @@
-# AlphaCrafter Miner-lite
+# AlphaCrafter 复现工程
 
-这是 AlphaCrafter 的第一版 Miner Harness，不依赖 LLM 即可运行：
+**当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。
+
+Miner Harness 不依赖 LLM 即可运行：
 
 1. 从现有技术特征 schema 生成安全的候选因子表达式；
 2. 逐日横截面 RankNorm；
@@ -14,8 +16,11 @@
 在项目根目录执行：
 
 ```bash
-python3 quant-method/alphacrafter/miner_lite.py
+python3 quant-method/alphacrafter/miner_lite.py \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_miner_pit
 ```
+
+首次运行请使用新目录：旧版本 registry 没有时间隔离认证，默认拒绝继承。
 
 默认输入：
 
@@ -34,17 +39,22 @@ quant-method/machine-learn/data/qlib/alphacrafter_miner_lite/
 - `candidates.json`：本轮候选因子
 - `candidate_metrics.csv`：所有候选的分段指标
 - `accepted_factors.json`：通过准入门槛的因子
-- `predictions.csv`：通过因子方向调整后的等权 composite 信号
+- `predictions.csv`：仅快照可用日的等权 composite 信号（不向历史回填）
+- `diagnostic_predictions.csv`：最终库在历史数据上的回算，不能用于样本外评估
+- `snapshots/YYYY-MM-DD.json`：不可覆盖的当日因子库快照
+- `temporal_audit.json`：信息截止、标签结束日、分段剔除行数
 - `registry.json`：因子注册表和维护状态快照
 - `factor_library.json`：持久化的活跃因子库
 - `report.md`：本轮报告
 - `novelty.json`：候选因子结构多样性和相对历史因子的新颖性
 
-当前时间切分为：训练集 2016–2022、验证集 2023、留出回测 2024–2026。验证集用于准入，留出回测只用于最终报告。
+默认切分为训练集 2016–2022、验证集 2023、留出回测 2024–2026，可通过 `--train-start/end`、`--validation-start/end`、`--backtest-start/end` 修改。`--as-of` 现在是真实信息截止：未来特征不可见，1/5 日标签分别在各段期末做 purge。留出窗口只报告截止日以前已经兑现的标签。
+
+若需要独立的 2023 年 Trader 验证，应先在 2022 年末完成因子准入，不能用默认 2023 年准入库回算 2023 年信号。
 
 ## Qlib 组合回测
 
-`predictions.csv` 可直接接入 Qlib 组合回测。当前 7 个通过因子按验证集确定的方向做等权平均，使用 Topk=50、每天最多替换 10 只股票：
+以下为旧版实验命令与结果，不是当前版本重新验证的成绩。历史连续信号现在应通过 Screener 快照回放生成，不能使用 `diagnostic_predictions.csv` 代替。旧实验的 7 个通过因子等权平均，使用 Topk=50、每天最多替换 10 只股票：
 
 ```bash
 conda run -n tradingagents python quant-method/machine-learn/qlib_portfolio_backtest.py \
@@ -91,7 +101,7 @@ python3 quant-method/alphacrafter/miner_lite.py \
 
 旧版特征文件如果没有 `target_5d`，Miner 会从 `return_1d` 安全推导；重新运行 `build_features.py` 会直接生成该标签。详细多周期指标写入 `candidate_metrics.csv` 和 `report.md`。
 
-因子库会持久化到 `factor_library.json`，每次运行自动加载已有因子；默认每 90 天重新验证并淘汰衰减因子。可用 `--maintenance-interval-days` 调整周期，或用 `--as-of YYYY-MM-DD` 指定维护日期。
+因子库持久化到 `factor_library.json` 和按日期归档的 `snapshots/`；已有因子通过 registry 继承，默认每 90 天到期重验。`--as-of YYYY-MM-DD` 同时约束所有可见数据与维护时点。快照不可覆盖，同一截止日重跑不同实验请使用新目录；滚动训练/验证窗口目前需调用者显式传入。
 
 当前还支持安全的因子 DSL/AST，不执行 LLM 返回的任意代码。例如：
 
@@ -151,7 +161,7 @@ python3 quant-method/machine-learn/build_features.py \
 
 ## Screener-lite
 
-Screener-lite 从持久化因子库中按过去 10 个已产生标签的交易日 Rank IC 动态筛选因子，执行表达式去重，并按绝对适用性分配权重和方向。每个信号日只使用此前的收益标签：
+Screener-lite 按过去 10 个信号日 Rank IC 动态筛选因子，要求这些标签已在当前日收盘前兑现；延迟/未知结束日时保守不筛选。默认只接受新版时间隔离快照，快照在 `as_of` 当日收盘可用，之前不产生信号。支持 `--library-history snapshots/` 逐日恢复准入/淘汰状态（见时间回放文档）。旧库仅可显式加 `--allow-retrospective-library` 做回溯诊断，不能作为无泄漏结果。以下静态库示例须先替换为新生成的库路径：
 
 ```bash
 python3 quant-method/alphacrafter/screener_lite.py \
@@ -187,7 +197,13 @@ python3 quant-method/alphacrafter/trader_lite.py \
   --output-dir quant-method/machine-learn/data/qlib/alphacrafter_trader_lite
 ```
 
-输出 `positions.csv`、`portfolio_returns.csv` 和 `summary.json`。当前版本不执行 LLM 生成代码，也不连接券商账户，只做可审计的长短组合模拟。
+输出 `positions.csv`、`portfolio_returns.csv`、`summary.json` 和运行参数。v2 按论文 Algorithm 3 最多验证 3 个配置；仅从 AR > 8%、Sharpe > 0.6、MDD > -8% 的配置中选取最高 Sharpe，**没有可行策略就保持现金**，不回退选取失败配置。输入日期必须严格分离，并剔除执行日跨过验证期末的标签。
+
+默认 β=0.8，首个候选 γ=0.5；美国市场年无风险收益默认 3.81%，可用 `--annual-risk-free-rate` 修改。最大回撤包含初始净值，零波动 Sharpe 输出 `null`。`summary.json` 记录输入 SHA-256 和 pandas/numpy 版本。
+
+**执行口径是日内代理，不是论文的持续持仓模拟器**：T 收盘产生信号，T+1 开盘建仓、收盘平仓，每日开平仓都按实际成交额收取 1bp；无信号时现金等待，不沿用旧仓位。选股不依赖未来标签是否存在，持仓收益缺失会报错，不能默认零收益。尚未模拟保证金、借券、流动性、滑点，也不执行 LLM 生成代码或连接券商。
+
+注意：Screener 新增快照回放，但不能凭空恢复旧实验缺失的历史快照。用 2023 年参与筛选的因子产生 2023 年信号，再用于 Trader 验证，仍属于重复使用验证信息。需重新按时间顺序生成因子库；旧回算结果只能作为诊断。
 
 滚动因子准入可运行：
 
@@ -195,9 +211,11 @@ python3 quant-method/alphacrafter/trader_lite.py \
 python3 quant-method/alphacrafter/run_miner_walk_forward.py
 ```
 
-时间边界和成本选择的回归测试：
+完整回归测试（Miner、Screener、Trader 及特征生成/命令行集成）：
 
 ```bash
 cd quant-method/alphacrafter
-python3 -m unittest -v test_harness.py
+python3 -m unittest discover -v
 ```
+
+特征生成和 Screener 现在保留没有未来标签的最新交易日；Screener 合成信号时任何成分缺失都保留为缺失，不再因因子顺序不同得到不同结果。旧特征/信号缓存不会自动更新，需要另行重建。

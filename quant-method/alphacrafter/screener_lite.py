@@ -29,6 +29,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from temporal import (
+    active_factors_at, label_end_dates, load_timeline, session_date, snapshot_date, visible_panel,
+)
+
 from miner_lite import (
     BASELINE_FEATURES,
     META_COLUMNS,
@@ -251,7 +255,8 @@ def assess_regime_with_llm(
 ) -> Dict[str, object]:
     """Ask DeepSeek for a structured regime diagnosis at one signal date."""
     history = frame[frame["date"] <= date].sort_values("date")
-    recent = history.tail(60)
+    recent_dates = history["date"].drop_duplicates().tail(60)
+    recent = history[history["date"].isin(recent_dates)]
     fields = ["return_1d", "return_5d", "return_20d", "volatility_20d", "volume_ratio_20d"]
     summary = {
         field: float(recent[field].median())
@@ -269,7 +274,7 @@ Return only one JSON object with this schema:
 }}
 Use only the supplied point-in-time statistics. Do not make a trade decision.
 As-of date: {date.date()}
-Recent 60-row statistics: {json.dumps(summary, ensure_ascii=False)}
+Recent 60-session full-universe statistics: {json.dumps(summary, ensure_ascii=False)}
 Recent positive-return breadth: {breadth}
 """
     model_name = model.split("/", 1)[1] if model.startswith("deepseek/") else model
@@ -312,14 +317,21 @@ def select_ensemble(
     max_factors: int,
     relevance: Optional[Dict[str, Dict[str, object]]] = None,
     semantic_similarity: Optional[Dict[Tuple[str, str], Dict[str, object]]] = None,
+    label_available_dates: Optional[pd.Series] = None,
 ) -> List[Dict[str, object]]:
     position = list(dates).index(date)
     previous_dates = list(dates[max(0, position - min_history_days) : position])
     if len(previous_dates) < min_history_days:
         return []
+    if label_available_dates is not None:
+        maturity = label_available_dates.reindex(previous_dates)
+        if maturity.isna().any() or (maturity > date).any():
+            return []
 
     scored = []
     for candidate_id, ics in daily_ics.items():
+        if candidate_id not in candidates:
+            continue
         if relevance is not None:
             relevance_result = relevance.get(candidate_id)
             if relevance_result is not None and not bool(relevance_result["relevant"]):
@@ -362,13 +374,29 @@ def select_ensemble(
     ]
 
 
+def ensemble_signal(
+    rank_scores: Dict[str, pd.Series],
+    ensemble: Sequence[Dict[str, object]],
+    index: pd.Index,
+) -> pd.Series:
+    """Missing component signals remain missing, independent of factor order."""
+    if not ensemble:
+        return pd.Series(np.nan, index=index, dtype=float)
+    components = pd.concat(
+        [rank_scores[factor["candidate_id"]].reindex(index) * factor["weight"] * factor["direction"]
+         for factor in ensemble], axis=1,
+    )
+    return components.sum(axis=1, min_count=len(ensemble))
+
+
 def main() -> None:
     base = Path(__file__).resolve().parents[1] / "machine-learn"
     parser = argparse.ArgumentParser(description="Run the deterministic AlphaCrafter Screener-lite")
     parser.add_argument(
         "--input", type=Path, default=base / "data" / "processed" / "sp500_features.csv.gz"
     )
-    parser.add_argument(
+    library_source = parser.add_mutually_exclusive_group()
+    library_source.add_argument(
         "--factor-library",
         type=Path,
         default=base / "data" / "qlib" / "alphacrafter_miner_lite" / "factor_library.json",
@@ -378,6 +406,10 @@ def main() -> None:
         type=Path,
         default=base / "data" / "qlib" / "alphacrafter_screener_lite",
     )
+    library_source.add_argument("--library-history", type=Path, help="Directory of write-once Miner snapshots for point-in-time replay")
+    parser.add_argument("--allow-retrospective-library", action="store_true", help="DIAGNOSTIC ONLY: allow a static legacy/future library on all historical dates")
+    parser.add_argument("--as-of", default=None, help="Last visible feature session; defaults to input maximum date")
+    parser.add_argument("--signal-start", default=None, help="First output signal date; earlier feature/IC history is retained")
     parser.add_argument("--lookback-days", type=int, default=10)
     parser.add_argument(
         "--min-suitability",
@@ -408,11 +440,37 @@ def main() -> None:
 
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
     execution_target = "target_open_close" if "target_open_close" in frame else "target_1d"
-    frame = frame.dropna(subset=[execution_target]).reset_index(drop=True)
+    # Forward-label availability is not observable at signal time. Retain the
+    # complete feature universe, including the latest unlabelled session.
+    as_of = session_date(args.as_of if args.as_of else frame["date"].max())
+    frame = visible_panel(frame, as_of)
+    label_ends = label_end_dates(frame, 1)
+    frame.loc[label_ends.isna(), execution_target] = np.nan
+    label_available_dates = label_ends.groupby(frame["date"]).max()
+    # A truncated/delisted instrument may have an unknown next quote. Do not
+    # compute a deceptively 'complete' IC from the other instruments alone.
+    unknown_end = label_ends.isna().groupby(frame["date"]).any()
+    label_available_dates = label_available_dates.mask(unknown_end)
     available = [column for column in frame.columns if column not in META_COLUMNS | BASELINE_FEATURES]
     ranked = frame[available].groupby(frame["date"], sort=False).rank(pct=True).astype("float32")
     dates = sorted(frame["date"].drop_duplicates())
-    factors = load_factor_library(args.factor_library)
+    signal_start = session_date(args.signal_start) if args.signal_start else dates[0]
+    signal_dates = [date for date in dates if date >= signal_start]
+    if not signal_dates:
+        parser.error("No visible sessions on or after --signal-start")
+    if args.library_history:
+        if args.allow_retrospective_library:
+            parser.error("Retrospective diagnostics cannot be combined with snapshot replay")
+        timeline = load_timeline(args.library_history)
+    else:
+        payload = json.loads(args.factor_library.read_text())
+        if args.allow_retrospective_library:
+            timeline = [(dates[0], {"factors": load_factor_library(args.factor_library)})]
+        else:
+            timeline = [(snapshot_date(payload), payload)]
+    # Future definitions must not be evaluated or passed to the LLM at this cutoff.
+    factors = [factor for cutoff, payload in timeline if cutoff <= as_of
+               for factor in payload.get("factors", payload.get("accepted_factors", []))]
     candidates: Dict[str, Candidate] = {}
     invalid_factors = []
     for factor in factors:
@@ -421,9 +479,14 @@ def main() -> None:
         except (TypeError, ValueError) as exc:
             invalid_factors.append({"candidate_id": factor.get("candidate_id", "<unknown>"), "error": str(exc)})
             continue
+        previous = candidates.get(candidate.candidate_id)
+        if previous is not None and previous != candidate:
+            raise ValueError(f"Factor ID {candidate.candidate_id} changes definition across snapshots; use versioned IDs")
         candidates[candidate.candidate_id] = candidate
-    if not candidates:
-        raise SystemExit("No valid active factors found in the factor library")
+    if invalid_factors and not args.allow_retrospective_library:
+        raise ValueError(f"Invalid snapshot factors: {invalid_factors}")
+    latest_ids = {factor["candidate_id"] for factor in active_factors_at(timeline, dates[-1])}
+    latest_candidates = {key: value for key, value in candidates.items() if key in latest_ids}
 
     latest_llm_regime: Optional[Dict[str, object]] = None
     latest_deterministic_regime = market_regime(frame, dates[-1])
@@ -437,7 +500,7 @@ def main() -> None:
     if args.llm_relevance_model:
         relevance_regime = latest_llm_regime or latest_deterministic_regime
         latest_relevance = {}
-        for candidate_id, candidate in candidates.items():
+        for candidate_id, candidate in latest_candidates.items():
             try:
                 latest_relevance[candidate_id] = judge_factor_relevance_with_tool(
                     candidate, relevance_regime, args.llm_relevance_model
@@ -459,7 +522,7 @@ def main() -> None:
     latest_similarity: Optional[Dict[Tuple[str, str], Dict[str, object]]] = None
     if args.llm_similarity_model:
         latest_similarity = {}
-        candidate_items = list(candidates.items())
+        candidate_items = list(latest_candidates.items())
         for left_index, (left_id, left_candidate) in enumerate(candidate_items):
             for right_id, right_candidate in candidate_items[left_index + 1 :]:
                 try:
@@ -475,11 +538,13 @@ def main() -> None:
     selection_rows: List[Dict[str, object]] = []
     regime_rows: List[Dict[str, object]] = []
     selected_days = 0
-    for date in dates:
+    for date in signal_dates:
+        active_ids = {factor["candidate_id"] for factor in active_factors_at(timeline, date)}
+        active_candidates = {key: value for key, value in candidates.items() if key in active_ids}
         ensemble = select_ensemble(
             date,
             dates,
-            candidates,
+            active_candidates,
             daily_ics,
             args.lookback_days,
             args.min_suitability,
@@ -487,6 +552,7 @@ def main() -> None:
             args.max_factors,
             latest_relevance if date == dates[-1] else None,
             latest_similarity if date == dates[-1] else None,
+            label_available_dates=label_available_dates,
         )
         regime = market_regime(frame, date)
         regime["regime_source"] = "deterministic"
@@ -500,7 +566,7 @@ def main() -> None:
                     "regime_source": "llm",
                 }
             )
-        regime_rows.append({"date": str(date.date()), **regime, "selected_factor_count": len(ensemble)})
+        regime_rows.append({"date": str(date.date()), **regime, "active_factor_count": len(active_candidates), "selected_factor_count": len(ensemble)})
         if not ensemble:
             continue
         selected_days += 1
@@ -516,7 +582,7 @@ def main() -> None:
                     }
                 )
             selection_rows.append(factor_row)
-            predictions.loc[day_mask] = predictions.loc[day_mask].fillna(0.0) + factor["weight"] * factor["direction"] * rank_scores[factor["candidate_id"]].loc[day_mask]
+        predictions.loc[day_mask] = ensemble_signal(rank_scores, ensemble, frame.index[day_mask])
 
     signal = pd.DataFrame(
         {
@@ -527,11 +593,19 @@ def main() -> None:
     ).sort_values(["datetime", "instrument"])
     args.output_dir.mkdir(parents=True, exist_ok=True)
     signal.to_csv(args.output_dir / "predictions.csv", index=False)
-    pd.DataFrame(selection_rows).to_csv(args.output_dir / "selection.csv", index=False)
+    selection_frame = pd.DataFrame(selection_rows) if selection_rows else pd.DataFrame(columns=["date", "candidate_id", "weight", "direction"])
+    selection_frame.to_csv(args.output_dir / "selection.csv", index=False)
     pd.DataFrame(regime_rows).to_csv(args.output_dir / "regime.csv", index=False)
 
     summary = {
-        "screener_version": "screener-lite-v1",
+        "screener_version": "screener-lite-v3",
+        "as_of": str(as_of.date()),
+        "signal_start": str(signal_start.date()),
+        "output_session_count": len(signal_dates),
+        "library_scope": "retrospective_diagnostic" if args.allow_retrospective_library else "point_in_time_snapshots",
+        "point_in_time_warning": "Retrospective diagnostics are not out-of-sample evidence" if args.allow_retrospective_library else "Snapshot cutoff enforced; source data and external candidate provenance still require independent audit",
+        "library_history": str(args.library_history) if args.library_history else None,
+        "snapshot_dates": [str(cutoff.date()) for cutoff, _ in timeline],
         "factor_library": str(args.factor_library),
         "input": str(args.input),
         "factor_count": len(candidates),
@@ -563,8 +637,9 @@ def main() -> None:
     report = [
         "# AlphaCrafter Screener-lite 报告",
         "",
-        f"- 因子库规模：`{len(candidates)}`",
-        f"- 产生信号的交易日：`{selected_days}` / `{len(dates)}`",
+        f"- 历史因子定义数：`{len(candidates)}`；信息截止：`{as_of.date()}`",
+        f"- 因子库模式：`{summary['library_scope']}`；快照按 as-of 激活，空快照清空因子库。",
+        f"- 产生信号的交易日：`{selected_days}` / `{len(signal_dates)}`",
         f"- 滚动窗口：`{args.lookback_days}` 日",
         f"- Suitability 阈值：`{args.min_suitability}`",
         f"- 语义相似度阈值：`{args.similarity_threshold}`",
@@ -574,7 +649,7 @@ def main() -> None:
     ]
     (args.output_dir / "report.md").write_text("\n".join(report) + "\n")
     print(f"Active factors: {len(candidates)}")
-    print(f"Signal days: {selected_days}/{len(dates)}")
+    print(f"Signal days: {selected_days}/{len(signal_dates)}")
     print(f"Results written to {args.output_dir}")
 
 

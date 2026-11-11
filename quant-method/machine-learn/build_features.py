@@ -382,18 +382,16 @@ def main() -> None:
                             "target_open_close_5d",
                         )
                     ]
-                # Keep the final rows with unavailable forward labels so the
-                # 1-day signal is not truncated.  Optional fundamentals/news
-                # remain NA when unavailable; Miner reports their coverage
-                # instead of silently deleting those observations.
+                # Keep final rows with unavailable forward labels: label
+                # availability is not an observable signal-time universe filter.
+                # Supervised training/evaluation must drop missing targets locally.
+                # Optional fundamentals/news remain NA for coverage checks.
                 technical_columns = [
                     column
                     for column in feature_columns
                     if not column.startswith(("fundamental_", "news_"))
                 ]
-                result = result.dropna(
-                    subset=technical_columns + ["target_1d", "target_open_close"]
-                ).copy()
+                result = result.dropna(subset=technical_columns).copy()
                 result["split"] = split_name(result["date"])
                 result = result[result["split"] != "excluded"]
                 result.to_csv(text_output, index=False, header=not wrote_header)

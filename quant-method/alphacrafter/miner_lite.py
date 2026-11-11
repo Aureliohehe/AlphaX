@@ -26,6 +26,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from temporal import (
+    TEMPORAL_POLICY_VERSION, label_end_dates, purged_mask, session_date,
+    validate_previous_registry, validate_windows, visible_panel, write_snapshot,
+)
+
 
 BASELINE_FEATURES = {"return_1d", "one_day_reversal"}
 META_COLUMNS = {
@@ -1233,8 +1238,15 @@ def main() -> None:
     parser.add_argument(
         "--as-of",
         default=None,
-        help="Maintenance date (YYYY-MM-DD); defaults to the latest available signal date",
+        help="Information cutoff at session close; future rows and unsettled labels are invisible",
     )
+    parser.add_argument("--snapshot-dir", type=Path, default=None, help="Write-once archive; defaults to <output-dir>/snapshots")
+    parser.add_argument("--train-start", default="2016-01-04")
+    parser.add_argument("--train-end", default="2022-12-30")
+    parser.add_argument("--validation-start", default="2023-01-03")
+    parser.add_argument("--validation-end", default="2023-12-29")
+    parser.add_argument("--backtest-start", default="2024-01-02")
+    parser.add_argument("--backtest-end", default="2026-02-27")
     parser.add_argument(
         "--llm-model",
         default=None,
@@ -1325,7 +1337,19 @@ def main() -> None:
     previous_value = previous_registry.get("accepted_factors", [])
     previous_factors = previous_value if isinstance(previous_value, list) else []
 
+    windows = {
+        "train": (args.train_start, args.train_end),
+        "validation": (args.validation_start, args.validation_end),
+        "backtest": (args.backtest_start, args.backtest_end),
+    }
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
+    try:
+        validate_windows(windows)
+        as_of = session_date(args.as_of if args.as_of else frame["date"].max())
+        validate_previous_registry(previous_registry, as_of)
+        frame = visible_panel(frame, as_of)
+    except ValueError as exc:
+        parser.error(str(exc))
     frame["target_5d"] = derive_target_5d(frame)
     has_execution_target_5d = "target_open_close_5d" in frame
     frame["target_open_close_5d"] = derive_execution_target_5d(frame)
@@ -1338,21 +1362,43 @@ def main() -> None:
         "target_open_close" if "target_open_close" in frame else "target_1d"
     )
     five_day_target_column = "target_open_close_5d"
-    # Keep rows whose 1-day label is valid even when the 5-day label is not
-    # yet available at the end of the file; the horizon evaluator handles it.
-    # Do not drop every feature here: candidate-level missing values must be
-    # visible to the coverage metric.
-    frame = frame.dropna(subset=[one_day_target_column]).reset_index(drop=True)
+    # Never use future-label missingness to decide the signal-time universe.
+    # Truncate first, then infer per-instrument label maturity. Stored forward
+    # targets in the last h rows may contain future values: censor them too.
     dates = frame["date"]
+    label_ends = {h: label_end_dates(frame, h) for h in EVALUATION_HORIZONS}
+    for column, horizon in (("target_1d", 1), ("target_open_close", 1),
+                            ("target_5d", 5), ("target_open_close_5d", 5)):
+        if column in frame:
+            frame.loc[label_ends[horizon].isna() | (label_ends[horizon] > as_of), column] = np.nan
     targets = {1: frame[one_day_target_column], 5: frame[five_day_target_column]}
     target_sources = {
         "1d": one_day_target_column,
         "5d": "target_open_close_5d" if has_execution_target_5d else "target_5d_fallback",
     }
 
-    train_mask = dates.dt.year <= 2022
-    valid_mask = dates.dt.year == 2023
-    backtest_mask = dates.dt.year >= 2024
+    train_mask = dates.between(*windows["train"])
+    horizon_masks = {
+        h: {name: purged_mask(dates, label_ends[h], start, end, as_of)
+            for name, (start, end) in windows.items()}
+        for h in EVALUATION_HORIZONS
+    }
+    temporal_audit = {
+        "policy_version": TEMPORAL_POLICY_VERSION,
+        "as_of": str(as_of.date()),
+        "visible_rows": len(frame),
+        "visible_last_session": str(dates.max().date()),
+        "label_end_source": "per-instrument shift(-h) on visible feature rows; filtered legacy panels may over-purge",
+        "windows": windows,
+        "segments": {
+            str(h): {name: {
+                "eligible_rows": int(mask.sum()),
+                "purged_rows": int((dates.between(start, min(session_date(end), as_of)) & ~mask).sum()),
+                "last_label_end": str(label_ends[h].loc[mask].max().date()) if mask.any() else None,
+            } for name, (start, end) in windows.items() for mask in [horizon_masks[h][name]]}
+            for h in EVALUATION_HORIZONS
+        },
+    }
 
     if args.candidate_file:
         candidates = load_candidates(args.candidate_file, available)
@@ -1423,15 +1469,6 @@ def main() -> None:
         for factor in previous_factors
         if isinstance(factor, dict) and factor.get("candidate_id")
     }
-    try:
-        as_of = (
-            pd.Timestamp(args.as_of).normalize()
-            if args.as_of
-            else dates.max().normalize()
-        )
-    except ValueError as exc:
-        parser.error(f"Invalid --as-of date: {exc}")
-
     # Cross-sectional rank normalization is computed once for all source fields.
     ranked = frame[available].groupby(dates, sort=False).rank(pct=True).astype("float32")
     baseline = frame["one_day_reversal"].groupby(dates, sort=False).rank(pct=True)
@@ -1444,13 +1481,13 @@ def main() -> None:
             horizon_target = targets[horizon]
             horizon_metrics[str(horizon)] = {
                 "train": metric_dict(
-                    evaluate_score(dates, score, horizon_target, train_mask, frame["ticker"])
+                    evaluate_score(dates, score, horizon_target, horizon_masks[horizon]["train"], frame["ticker"])
                 ),
                 "validation": metric_dict(
-                    evaluate_score(dates, score, horizon_target, valid_mask, frame["ticker"])
+                    evaluate_score(dates, score, horizon_target, horizon_masks[horizon]["validation"], frame["ticker"])
                 ),
                 "backtest": metric_dict(
-                    evaluate_score(dates, score, horizon_target, backtest_mask, frame["ticker"])
+                    evaluate_score(dates, score, horizon_target, horizon_masks[horizon]["backtest"], frame["ticker"])
                 ),
             }
         train = horizon_metrics["1"]["train"]
@@ -1612,21 +1649,34 @@ def main() -> None:
         horizon_target = targets[horizon]
         baseline_horizons[str(horizon)] = {
             "train": metric_dict(
-                evaluate_score(dates, baseline, horizon_target, train_mask, frame["ticker"])
+                evaluate_score(dates, baseline, horizon_target, horizon_masks[horizon]["train"], frame["ticker"])
             ),
             "validation": metric_dict(
-                evaluate_score(dates, baseline, horizon_target, valid_mask, frame["ticker"])
+                evaluate_score(dates, baseline, horizon_target, horizon_masks[horizon]["validation"], frame["ticker"])
             ),
             "backtest": metric_dict(
-                evaluate_score(dates, baseline, horizon_target, backtest_mask, frame["ticker"])
+                evaluate_score(dates, baseline, horizon_target, horizon_masks[horizon]["backtest"], frame["ticker"])
             ),
         }
     baseline_metrics = baseline_horizons["1"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     factor_library_path = args.output_dir / "factor_library.json"
+    library_payload = {
+        "library_version": "miner-factor-library-v2",
+        "temporal_policy_version": TEMPORAL_POLICY_VERSION,
+        "as_of": maintenance["as_of"],
+        "temporal_audit": temporal_audit,
+        "maintenance": maintenance,
+        "factors": accepted,
+    }
+    # Archive before replacing mutable convenience outputs. A conflicting run
+    # at the same cutoff must not silently rewrite historical admission state.
+    snapshot_path = write_snapshot(args.snapshot_dir or args.output_dir / "snapshots", library_payload)
     signal = build_accepted_signal(frame, ranked, accepted)
-    signal.to_csv(args.output_dir / "predictions.csv", index=False)
+    signal.to_csv(args.output_dir / "diagnostic_predictions.csv", index=False)
+    signal.loc[signal["datetime"] >= as_of].to_csv(args.output_dir / "predictions.csv", index=False)
+    (args.output_dir / "temporal_audit.json").write_text(json.dumps(temporal_audit, indent=2) + "\n")
     candidate_payload = []
     for candidate in candidates:
         payload = asdict(candidate)
@@ -1651,12 +1701,7 @@ def main() -> None:
     )
     factor_library_path.write_text(
         json.dumps(
-            {
-                "library_version": "miner-factor-library-v1",
-                "as_of": maintenance["as_of"],
-                "maintenance": maintenance,
-                "factors": accepted,
-            },
+            library_payload,
             indent=2,
             ensure_ascii=False,
             allow_nan=True,
@@ -1686,7 +1731,10 @@ def main() -> None:
     registry_path.write_text(
         json.dumps(
             {
-                "registry_version": "miner-lite-v2",
+                "registry_version": "miner-lite-v3",
+                "temporal_policy_version": TEMPORAL_POLICY_VERSION,
+                "temporal_audit": temporal_audit,
+                "snapshot_file": str(snapshot_path),
                 "generator": generator,
                 "input": str(args.input),
                 "as_of": maintenance["as_of"],
@@ -1698,11 +1746,11 @@ def main() -> None:
                     "file": "predictions.csv",
                     "construction": "equal-weight mean of direction-adjusted accepted factor scores",
                     "execution": "T close signal, T+1 open trade",
+                    "available_from": str(as_of.date()),
+                    "retrospective_diagnostic_file": "diagnostic_predictions.csv",
                 },
                 "selection": {
-                    "train_end": "2022-12-30",
-                    "validation": "2023",
-                    "holdout": "2024-2026",
+                    "windows": windows,
                     "paper_horizon_thresholds": PAPER_HORIZON_THRESHOLDS,
                     "paper_min_hit_deviation": PAPER_MIN_HIT_DEVIATION,
                     "min_train_ic_override": args.min_train_ic,
@@ -1755,7 +1803,9 @@ def main() -> None:
         f"- 合并因子库后候选数：`{len(candidates)}`",
         f"- 本轮准入门通过数：`{len(current_accepted)}`",
         f"- 当前活跃因子数：`{len(accepted)}`",
-        "- 训练集：2016–2022；验证集：2023；留出回测：2024–2026",
+        f"- 信息截止：`{as_of.date()}`；时间区间：`{windows}`",
+        "- 1/5 日标签分别按结束日隔离；`temporal_audit.json` 记录剔除行数。",
+        "- `predictions.csv` 仅包含快照可用日信号；此前信号仅写入 `diagnostic_predictions.csv`，不能当作样本外证据。",
         "- `return_1d` 与 `one_day_reversal` 不进入候选池，避免重复计算简单反转因子。",
         "",
         "## 基线",
@@ -1805,7 +1855,7 @@ def main() -> None:
     report_lines.extend(
         [
             "",
-            "> 验证集用于因子准入；2024–2026 只作为最终留出报告，不能用于调阈值。",
+            "> 验证集用于因子准入；留出窗口仅在 as-of 已知范围内报告，不能用于调阈值。",
             f"> 多周期评估：{', '.join(str(horizon) + 'd' for horizon in EVALUATION_HORIZONS)}；覆盖率最低 {args.min_coverage:.2f}，排名换手率最高 {args.max_turnover:.2f}。",
             f"> 因子库维护：截至 {maintenance['as_of']}，间隔 {args.maintenance_interval_days} 天；本轮淘汰 {len(pruned_factors)} 个因子。",
             "> 当前版本是 Miner-lite：候选可由安全模板或 MinerLLM 生成，也支持通过 `--candidate-file` 接收外部 JSON。",
