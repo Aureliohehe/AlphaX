@@ -1,6 +1,6 @@
 # AlphaCrafter 复现工程
 
-**当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。
+**当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。固定三因子的准入失败明细见 [`GATE_DIAGNOSIS.md`](GATE_DIAGNOSIS.md)，后续固定十二个技术候选的探索性结果见 [`CANDIDATE_EXPLORATION.md`](CANDIDATE_EXPLORATION.md)，论文指标/标签口径对照见 [`METRIC_AUDIT.md`](METRIC_AUDIT.md)，raw 与 RankNorm 的配对量化见 [`RANKNORM_AUDIT.md`](RANKNORM_AUDIT.md)，Qlib Alpha158 候选与 GitHub 调研见 [`ALPHA158_PRESET_REVIEW.md`](ALPHA158_PRESET_REVIEW.md)，严格单因子与固定 XGBoost 模型两条探索路线见 [`TWO_TRACK_EXPERIMENT.md`](TWO_TRACK_EXPERIMENT.md)，数据时点/独立日历障碍见 [`DATA_PROVENANCE_AUDIT.md`](DATA_PROVENANCE_AUDIT.md)；严格实验仍未产生可行策略；另有明确降低准入门槛、已跑出模拟持仓但**不能当作论文或实盘收益**的 LLM Agent 执行演示，见 [`AGENT_EXECUTION_DEMO.md`](AGENT_EXECUTION_DEMO.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。
 
 Miner Harness 不依赖 LLM 即可运行：
 

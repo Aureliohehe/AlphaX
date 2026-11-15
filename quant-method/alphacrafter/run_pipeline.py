@@ -355,6 +355,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--candidate-file", type=Path, help="Fixed hypotheses decided before selection; no external LLM calls")
     parser.add_argument("--calendar", type=Path, help="Reference date CSV: require complete feature sessions across the experiment")
+    parser.add_argument("--allow-feature-warmup-sessions", type=int, default=0,
+                        help="Explicitly permit at most N missing reference sessions before the first feature date; internal gaps still fail")
     parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy panels without label_end_1d/label_end_5d")
     parser.add_argument("--initial-as-of", default="2022-12-30")
     parser.add_argument("--train-start", default="2016-01-04")
@@ -394,15 +396,28 @@ def main() -> None:
             raise ValueError("annual-risk-free-rate must be finite and greater than -1")
         if args.max_pairs < 0 or args.max_temporal < 0:
             raise ValueError("Template candidate limits cannot be negative")
+        if args.allow_feature_warmup_sessions < 0:
+            raise ValueError("allow-feature-warmup-sessions cannot be negative")
+        if args.allow_feature_warmup_sessions and not args.calendar:
+            raise ValueError("allow-feature-warmup-sessions requires --calendar")
         if args.step_timeout is not None and (not np.isfinite(args.step_timeout) or args.step_timeout <= 0):
             raise ValueError("step-timeout must be finite and positive")
         calendar = pd.read_csv(args.input, usecols=["date"], parse_dates=["date"])["date"].drop_duplicates()
         plan = build_plan(calendar, args.initial_as_of, args.train_start, args.selection_start, args.selection_end,
                           args.holdout_start, args.holdout_end, args.maintenance_days, args.admission_sessions, args.min_train_sessions)
         if args.calendar:
-            audit = calendar_audit(calendar, read_calendar(args.calendar), args.train_start, args.holdout_end)
-            if not audit["matches_reference"]:
+            reference = read_calendar(args.calendar)
+            audit = calendar_audit(calendar, reference, args.train_start, args.holdout_end)
+            # Feature builders legitimately discard the leading indicator warm-up.
+            # An explicit allowance only applies to a contiguous prefix, never
+            # to missing sessions inside the experiment's observed feature span.
+            first = pd.Timestamp(calendar.min())
+            prefix = [date for date in audit["missing_sessions"] if pd.Timestamp(date) < first]
+            if len(prefix) > args.allow_feature_warmup_sessions or len(audit["missing_sessions"]) != len(prefix) or audit["unexpected_sessions"]:
                 raise ValueError(f"Feature calendar mismatch: missing={audit['missing_sessions'][:10]}, unexpected={audit['unexpected_sessions'][:10]}")
+            audit["feature_warmup_sessions"] = len(prefix)
+            audit["first_feature_session"] = str(first.date())
+            audit["matches_reference_after_warmup"] = True
             plan["calendar_audit"] = audit
         else:
             plan["calendar_audit"] = {"mode": "observed_feature_sessions_only", "matches_reference": None}

@@ -19,6 +19,9 @@ from data_contract import (
 )
 from build_features import add_features
 from train_xgboost_qlib import load_frame
+from run_alpha158_model_diagnostic import candidate_features, fold_masks, daily_metrics
+from audit_sp500_universe import audit as audit_sp500_universe, snapshot_entries
+from compare_alpha158_qlib import compare as compare_qlib_fields
 from trader_lite import TraderConfig, load_inputs, simulate
 from test_temporal import fixture_panel, run_cli
 
@@ -136,6 +139,23 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(audit["unexpected_sessions"], ["2024-01-06"])
         self.assertFalse(audit["matches_reference"])
 
+    def test_snapshot_membership_audit_detects_pre_entry_and_never_certifies_pit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dates = pd.bdate_range("2022-12-26", periods=4)
+            pd.DataFrame({"Symbol": ["A", "B"], "Date added": [dates[2], dates[0]]}).to_csv(root / "members.csv", index=False)
+            pd.DataFrame({"date": dates}).to_csv(root / "calendar.csv", index=False)
+            frame = pd.DataFrame({"date": list(dates) * 2, "ticker": ["A"] * 4 + ["B"] * 4})
+            frame.to_csv(root / "features.csv", index=False)
+            result = audit_sp500_universe(root / "features.csv", root / "members.csv", root / "calendar.csv")
+            self.assertEqual(result["feature_rows_before_current_snapshot_date_added"], 2)
+            self.assertFalse(result["historical_membership_complete"])
+            self.assertEqual(result["status"], "not_point_in_time_certified")
+            self.assertTrue(result["calendar_audit_after_feature_warmup"]["matches_reference"])
+            pd.DataFrame({"Symbol": ["A", "A"], "Date added": [dates[0], dates[1]]}).to_csv(root / "members.csv", index=False)
+            with self.assertRaisesRegex(ValueError, "unique"):
+                snapshot_entries(root / "members.csv")
+
     def test_reference_requires_unique_sorted_dates_and_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "calendar.csv"
@@ -145,6 +165,37 @@ class CalendarTests(unittest.TestCase):
                     read_calendar(path)
         with self.assertRaisesRegex(ValueError, "cover"):
             calendar_audit(pd.Series(pd.bdate_range("2024-01-01", periods=10)), pd.bdate_range("2024-01-01", periods=5), "2024-01-01", "2024-01-20")
+
+    def test_pipeline_warmup_allowance_only_exempts_contiguous_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = explicit_panel(70)
+            dates = sorted(panel["date"].unique())
+            pd.DataFrame({"date": dates}).to_csv(root / "calendar.csv", index=False)
+            date = lambda index: str(pd.Timestamp(dates[index]).date())
+            args = [
+                "--input", root / "features.csv", "--calendar", root / "calendar.csv",
+                "--require-explicit-label-dates", "--train-start", date(0),
+                "--initial-as-of", date(44), "--admission-sessions", "20",
+                "--min-train-sessions", "20", "--selection-start", date(45),
+                "--selection-end", date(54), "--holdout-start", date(55),
+                "--holdout-end", date(64), "--output-dir", root / "dry", "--dry-run",
+            ]
+            panel.loc[panel["date"] >= dates[2]].to_csv(root / "features.csv", index=False)
+            failed = run_cli("run_pipeline.py", *args, check=False)
+            self.assertIn("Feature calendar mismatch", failed.stderr)
+            failed = run_cli("run_pipeline.py", *args, "--allow-feature-warmup-sessions", "1", check=False)
+            self.assertIn("Feature calendar mismatch", failed.stderr)
+            success = run_cli("run_pipeline.py", *args, "--allow-feature-warmup-sessions", "2")
+            audit = json.loads(success.stdout)["calendar_audit"]
+            self.assertEqual(audit["feature_warmup_sessions"], 2)
+            self.assertEqual(audit["first_feature_session"], date(2))
+            self.assertFalse(audit["matches_reference"])
+            self.assertTrue(audit["matches_reference_after_warmup"])
+            panel.loc[(panel["date"] >= dates[2]) & (panel["date"] != dates[50])].to_csv(root / "features.csv", index=False)
+            failed = run_cli("run_pipeline.py", *args, "--allow-feature-warmup-sessions", "2", check=False)
+            self.assertIn("Feature calendar mismatch", failed.stderr)
+            self.assertFalse((root / "dry").exists())
 
     def test_exact_end_and_calendar_allow_return_despite_filtered_execution_row(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +218,40 @@ class CalendarTests(unittest.TestCase):
             # a valid stored P&L is not evidence of complete signal coverage.
             audit = calendar_audit(frame["date"], pd.DatetimeIndex(dates), dates[0], dates[-1])
             self.assertFalse(audit["matches_reference"])
+
+
+class ModelDiagnosticTests(unittest.TestCase):
+    def test_curated_features_are_frozen_and_raw(self):
+        source = HERE / "candidates_alpha158_curated_v1.json"
+        features = candidate_features(source)
+        self.assertEqual(len(features), 18)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.json"
+            candidates = json.loads(source.read_text())
+            candidates[0]["expression"] = {"op": "rank", "input": {"op": "feature", "feature": features[0]}}
+            path.write_text(json.dumps(candidates))
+            with self.assertRaisesRegex(ValueError, "raw, single-column"):
+                candidate_features(path)
+
+    def test_model_fold_purges_unsettled_labels_and_does_not_fit_validation(self):
+        frame = explicit_panel(45).copy()
+        dates = sorted(frame["date"].unique())
+        # Fit must not use the last training signal whose next-day target
+        # settles after training ends; validation's final signal also cannot
+        # enter reported IC, though it is still predicted.
+        iso = lambda i: str(pd.Timestamp(dates[i]).date())
+        train, valid, scored = fold_masks(frame, iso(19), iso(20), iso(29))
+        self.assertFalse(train[frame["date"] == dates[19]].any())
+        self.assertTrue(valid[frame["date"] == dates[29]].all())
+        self.assertFalse(scored[frame["date"] == dates[29]].any())
+        changed = frame.copy()
+        changed.loc[valid, "target_open_close"] = -999.
+        again, _, _ = fold_masks(changed, iso(19), iso(20), iso(29))
+        pd.testing.assert_series_equal(train, again)
+        # No returned IC may consume unlabelled/unsettled rows.
+        summary, daily = daily_metrics(frame, frame["feature_x"], scored)
+        self.assertEqual(summary["rows"], int(scored.sum()))
+        self.assertEqual(daily["date"].max(), iso(28))
 
 
 class DataContractIntegrationTests(unittest.TestCase):
@@ -192,6 +277,84 @@ class DataContractIntegrationTests(unittest.TestCase):
             failed = subprocess.run(command, capture_output=True, text=True)
             self.assertNotEqual(failed.returncode, 0)
             self.assertEqual(prior, output.read_bytes())
+
+    def test_qlib_comparator_flags_value_and_missingness_mismatch(self):
+        index = pd.MultiIndex.from_tuples([("A", pd.Timestamp("2022-01-03")), ("A", pd.Timestamp("2022-01-04"))], names=["ticker", "date"])
+        local = pd.DataFrame({"alpha158_kmid2": [1.0, np.nan]}, index=index)
+        official = pd.DataFrame({"alpha158_kmid2": [1.1, 2.]}, index=index)
+        metric = compare_qlib_fields(local, official, ["alpha158_kmid2"], atol=1e-4)["alpha158_kmid2"]
+        self.assertEqual(metric["samples"], 1)
+        self.assertEqual(metric["missing_mismatch"], 1)
+        self.assertEqual(metric["rows_exceeding_tolerance"], 1)
+
+    def test_miner_paper_label_mode_is_explicit_and_cannot_inherit_execution_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = explicit_panel(70)
+            dates = sorted(panel["date"].unique())
+            panel.to_csv(root / "features.csv", index=False)
+            (root / "candidates.json").write_text(json.dumps([{
+                "candidate_id": "x", "op": "feature", "features": ["feature_x"], "hypothesis": "fixture",
+            }]))
+            date = lambda index: str(pd.Timestamp(dates[index]).date())
+            args = ["--input", root / "features.csv", "--candidate-file", root / "candidates.json",
+                    "--require-explicit-label-dates", "--as-of", date(59),
+                    "--train-start", date(0), "--train-end", date(29),
+                    "--validation-start", date(30), "--validation-end", date(59),
+                    "--backtest-start", date(60), "--backtest-end", date(60)]
+            run_cli("miner_lite.py", *args, "--output-dir", root / "execution")
+            self.assertEqual(json.loads((root / "execution/registry.json").read_text())["selection"]["target_sources"]["1d"], "target_open_close")
+            run_cli("miner_lite.py", *args, "--label-mode", "paper_close", "--output-dir", root / "paper")
+            sources = json.loads((root / "paper/registry.json").read_text())["selection"]["target_sources"]
+            self.assertEqual(sources, {"1d": "target_1d", "5d": "target_5d"})
+            snapshot = json.loads((root / "paper/snapshots" / (date(59) + ".json")).read_text())
+            self.assertEqual(snapshot["temporal_audit"]["label_mode"], "paper_close")
+            failed_screen = run_cli("screener_lite.py", "--input", root / "features.csv",
+                                    "--library-history", root / "paper/snapshots", "--as-of", date(59),
+                                    "--output-dir", root / "screen", check=False)
+            self.assertIn("diagnostic only", failed_screen.stderr)
+            failed = run_cli("miner_lite.py", *args, "--label-mode", "paper_close",
+                             "--registry", root / "execution/registry.json", "--output-dir", root / "mismatch", check=False)
+            self.assertIn("different label targets", failed.stderr)
+
+    def test_execution_demo_harness_creates_real_positions_on_synthetic_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = explicit_panel(50)
+            dates = sorted(panel["date"].unique())
+            date = lambda i: str(pd.Timestamp(dates[i]).date())
+            panel.to_csv(root / "features.csv", index=False)
+            pd.DataFrame({"date": dates}).to_csv(root / "calendar.csv", index=False)
+            miner = root / "miner"
+            miner.mkdir()
+            (miner / "registry.json").write_text(json.dumps({"as_of": date(20), "generator": "llm_cluster:fixture:1", "accepted_count": 0}))
+            (miner / "candidates.json").write_text(json.dumps([{
+                "candidate_id": "fixture_factor", "features": ["feature_x"],
+                "expression": {"op": "feature", "feature": "feature_x"}, "hypothesis": "synthetic only",
+            }]))
+            metric = {"mean_daily_ic": .01, "mean_daily_rank_ic": .02, "icir": .1, "rank_icir": .1,
+                      "rank_ic_hit_ratio": .55, "coverage": 1., "turnover": .2}
+            (miner / "candidate_metrics.json").write_text(json.dumps([{
+                "candidate_id": "fixture_factor", "direction_from_train": 1,
+                "gate_results": {"train_1d": False, "validation_1d": False, "train_5d": False, "validation_5d": False},
+                "horizons": {"1": {"train": metric, "validation": metric}},
+            }]))
+            (miner / "llm_candidate_audit.json").write_text("[]")
+            (miner / "temporal_audit.json").write_text(json.dumps({"label_mode": "execution"}))
+            run_cli("run_agent_execution_demo.py", "--miner-dir", miner,
+                    "--input", root / "features.csv", "--calendar", root / "calendar.csv",
+                    "--admission-as-of", date(20), "--selection-start", date(21), "--selection-end", date(35),
+                    "--output-dir", root / "demo")
+            summary = json.loads((root / "demo/summary.json").read_text())
+            self.assertEqual(summary["status"], "completed_exploratory_demo")
+            self.assertEqual(summary["library_scope"], "retrospective_diagnostic")
+            library = json.loads((root / "demo/factor_library_demo.json").read_text())
+            self.assertEqual(library["library_scope"], "retrospective_diagnostic")
+            self.assertNotEqual(library["factors"][0]["created_at_utc"][:10], date(20))
+            self.assertFalse((root / "demo/snapshots").exists())
+            self.assertGreater(summary["invested_days"], 0)
+            self.assertGreater(summary["position_rows"], 0)
+            self.assertTrue((pd.read_csv(root / "demo/trades_daily.csv")["transaction_cost"] > 0).any())
 
     def test_strict_miner_refuses_legacy_registry_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:

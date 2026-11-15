@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -17,8 +19,11 @@ from miner_lite import (
     evaluate_score,
     expression_novelty_report,
     library_factor,
+    load_candidates,
     needs_revalidation,
+    parse_llm_candidates,
 )
+from run_agent_execution_demo import demo_gate
 from run_miner_walk_forward import (
     build_signal,
     select_factors,
@@ -160,6 +165,45 @@ class MinerHarnessTests(unittest.TestCase):
         self.assertEqual(stored["validation_count"], 1)
         self.assertEqual(len(stored["validation_history"]), 1)
 
+    def test_execution_demo_gate_does_not_silently_use_paper_gate_or_failures(self) -> None:
+        row = {"direction_from_train": 1, "horizons": {"1": {
+            split: {"mean_daily_ic": .001, "mean_daily_rank_ic": .001,
+                    "icir": .01, "rank_icir": .01, "rank_ic_hit_ratio": .51,
+                    "coverage": 1., "turnover": .2} for split in ("train", "validation")}}}
+        self.assertTrue(demo_gate(row))
+        self.assertFalse(demo_gate({**row, "direction_from_train": 0}))
+        changed = json.loads(json.dumps(row))
+        changed["horizons"]["1"]["validation"]["rank_ic_hit_ratio"] = .49
+        self.assertFalse(demo_gate(changed))
+        changed["horizons"]["1"]["validation"]["rank_ic_hit_ratio"] = .51
+        changed["horizons"]["1"]["train"]["icir"] = -0.01
+        self.assertFalse(demo_gate(changed))
+
+    def test_llm_repairs_only_redundant_ast_features_and_rejects_invalid_ops(self) -> None:
+        audit = []
+        candidates = parse_llm_candidates([
+            {"candidate_id": "llm_safe", "features": ["wrong"], "hypothesis": "fixture",
+             "expression": {"op": "feature", "feature": "feature_a"}},
+            {"candidate_id": "llm_unsafe", "features": ["feature_a"],
+             "expression": {"op": "exec", "input": "open('/tmp/unsafe')"}},
+        ], ["feature_a"], audit)
+        self.assertEqual([item.candidate_id for item in candidates], ["llm_safe"])
+        self.assertEqual(candidates[0].features, ("feature_a",))
+        self.assertEqual([entry["status"] for entry in audit], ["normalized_features", "rejected"])
+        with self.assertRaisesRegex(ValueError, "no valid"):
+            parse_llm_candidates([{"candidate_id": "broken", "op": "eval", "features": ["feature_a"]}], ["feature_a"], [])
+
+    def test_curated_alpha158_candidates_are_explicit_and_not_proxy_regressions(self) -> None:
+        source = Path(__file__).with_name("candidates_alpha158_curated_v1.json")
+        payload = json.loads(source.read_text())
+        self.assertEqual(len(payload), 18)
+        self.assertEqual(len({item["candidate_id"] for item in payload}), 18)
+        candidates = load_candidates(source, [item["features"][0] for item in payload])
+        self.assertTrue(all(candidate.expression_spec == {"op": "feature", "feature": candidate.features[0]}
+                            for candidate in candidates))
+        self.assertFalse(any(any(proxy in candidate.features[0] for proxy in ("beta", "rsqr", "resi", "imax", "imin", "imxd", "vwap", "rank"))
+                             for candidate in candidates))
+
     def test_expression_novelty_report_is_structural(self) -> None:
         report = expression_novelty_report(
             [
@@ -183,6 +227,33 @@ class MinerHarnessTests(unittest.TestCase):
         self.assertLessEqual(metric.turnover, 1.0)
         self.assertTrue(hasattr(metric, "mean_daily_ic"))
         self.assertTrue(hasattr(metric, "icir"))
+
+    def test_icir_uses_paper_population_standard_deviation(self) -> None:
+        dates = pd.Series(pd.to_datetime(["2020-01-02"] * 4 + ["2020-01-03"] * 4 + ["2020-01-06"] * 4))
+        score = pd.Series([1., 2., 3., 4.] * 3)
+        target = pd.Series([1., 2., 3., 4., 1., 2., 4., 3., 3., 2., 4., 1.])
+        metric = evaluate_score(dates, score, target, pd.Series(True, index=dates.index))
+        daily_ic = pd.Series([score.iloc[i:i + 4].corr(target.iloc[i:i + 4]) for i in (0, 4, 8)])
+        self.assertAlmostEqual(metric.daily_ic_std, daily_ic.std(ddof=0))
+        self.assertAlmostEqual(metric.icir, daily_ic.mean() / daily_ic.std(ddof=0))
+        self.assertNotAlmostEqual(metric.icir, daily_ic.mean() / daily_ic.std(ddof=1))
+
+    def test_raw_vs_ranked_single_feature_changes_pearson_not_rank_ic(self) -> None:
+        frame = pd.DataFrame({
+            "date": pd.to_datetime(["2020-01-02"] * 4 + ["2020-01-03"] * 4),
+            "ticker": ["A", "B", "C", "D"] * 2,
+            "signal": [1., 2., 3., 30., 1., 4., 6., 40.],
+        })
+        target = pd.Series([.01, .02, .04, .06, .01, .05, .03, .07])
+        ranked = frame[["signal"]].groupby(frame["date"]).rank(pct=True)
+        legacy = Candidate("ranked", "feature", ("signal",), "")
+        raw = Candidate("raw", "expression", ("signal",), "", {"op": "feature", "feature": "signal"})
+        rank_metric = evaluate_score(frame["date"], evaluate_candidate_score(legacy, ranked, frame, frame["date"]),
+                                     target, pd.Series(True, index=frame.index), frame["ticker"])
+        raw_metric = evaluate_score(frame["date"], evaluate_candidate_score(raw, ranked, frame, frame["date"]),
+                                    target, pd.Series(True, index=frame.index), frame["ticker"])
+        self.assertNotAlmostEqual(raw_metric.mean_daily_ic, rank_metric.mean_daily_ic)
+        self.assertAlmostEqual(raw_metric.mean_daily_rank_ic, rank_metric.mean_daily_rank_ic)
 
     def test_accepted_ast_factor_is_rehydrated_for_signal_building(self) -> None:
         frame = pd.DataFrame(

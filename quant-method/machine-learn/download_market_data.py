@@ -24,9 +24,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-# Pin the universe to a revision before the 2026-02-27 cutoff.  Using the
-# repository's moving ``master`` file would introduce survivorship/look-ahead
-# bias when the script is run after the experiment.
+# Pin a reproducible 2025 snapshot rather than the moving master.  This is
+# NOT historical PIT membership for the 2016-2026 experiment: companies
+# removed before this snapshot are missing and later entrants have pre-entry
+# price histories. See alphacrafter/DATA_PROVENANCE_AUDIT.md before reuse.
 CONSTITUENTS_URL = (
     "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/"
     "b61fb6f07286/data/constituents.csv"

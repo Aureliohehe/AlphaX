@@ -471,6 +471,10 @@ def main() -> None:
             timeline = [(dates[0], {"factors": load_factor_library(args.factor_library)})]
         else:
             timeline = [(snapshot_date(payload), payload)]
+    # Paper-close Miner libraries are metric diagnostics, not execution-aligned
+    # factor libraries. Never silently replay them with open-to-close IC labels.
+    if any(payload.get("temporal_audit", {}).get("label_mode") == "paper_close" for _, payload in timeline):
+        parser.error("paper_close Miner snapshots are diagnostic only and cannot be replayed by execution Screener")
     # Future definitions must not be evaluated or passed to the LLM at this cutoff.
     factors = [factor for cutoff, payload in timeline if cutoff <= as_of
                for factor in payload.get("factors", payload.get("accepted_factors", []))]

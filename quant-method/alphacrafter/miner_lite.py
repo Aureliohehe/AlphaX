@@ -15,6 +15,7 @@ the validator and registry remain unchanged.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -589,12 +590,48 @@ def build_market_context(frame: pd.DataFrame, train_mask: pd.Series) -> str:
     )
 
 
+def parse_llm_candidates(payload: object, available: Sequence[str], audit: List[Dict[str, object]]) -> List[Candidate]:
+    """Reject unsafe proposals individually; correct only redundant AST leaf metadata."""
+    if not isinstance(payload, list):
+        raise ValueError("LLM response must be a candidate array")
+    accepted = []
+    for index, value in enumerate(payload):
+        if not isinstance(value, dict):
+            audit.append({"index": index, "status": "rejected", "reason": "candidate is not an object"})
+            continue
+        candidate_id = str(value.get("candidate_id", value.get("id", "")))
+        proposed = dict(value)
+        if isinstance(value.get("expression"), dict):
+            try:
+                ast = normalize_expression(value["expression"])
+                validate_expression(ast, available)
+                leaves = list(expression_features(ast))
+                if proposed.get("features") != leaves:
+                    proposed["features"] = leaves
+                    audit.append({"index": index, "candidate_id": candidate_id, "status": "normalized_features",
+                                  "reason": "redundant features list differs from validated AST leaves"})
+            except (ValueError, TypeError) as exc:
+                audit.append({"index": index, "candidate_id": candidate_id, "status": "rejected", "reason": str(exc)})
+                continue
+        try:
+            candidate = candidate_from_dict(proposed)
+            validate_candidate(candidate, available)
+        except (ValueError, TypeError) as exc:
+            audit.append({"index": index, "candidate_id": candidate_id, "status": "rejected", "reason": str(exc)})
+            continue
+        accepted.append(candidate)
+    if not accepted:
+        raise ValueError("LLM proposed no valid safe candidates")
+    return accepted
+
+
 def generate_llm_candidates(
     model: str,
     available: Sequence[str],
     market_context: str,
     count: int,
     role: str = "general_factor_researcher",
+    audit: Optional[List[Dict[str, object]]] = None,
 ) -> List[Candidate]:
     """Generate candidates with DeepSeek directly or another LiteLLM provider.
 
@@ -656,10 +693,11 @@ Point-in-time market context: {market_context}
     payload = json.loads(content)
     if not isinstance(payload, list):
         payload = payload.get("candidates", []) if isinstance(payload, dict) else []
-    candidates = [candidate_from_dict(value) for value in payload]
-    for candidate in candidates:
-        validate_candidate(candidate, available)
-    return candidates
+    if audit is not None:
+        audit.append({"status": "llm_response", "role": role,
+                      "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                      "proposed_count": len(payload) if isinstance(payload, list) else None})
+    return parse_llm_candidates(payload, available, audit if audit is not None else [])
 
 
 def generate_llm_candidate_cluster(
@@ -668,6 +706,7 @@ def generate_llm_candidate_cluster(
     market_context: str,
     count: int,
     agents: int,
+    audit: Optional[List[Dict[str, object]]] = None,
 ) -> List[Candidate]:
     """Run independent specialist Miner agents and deduplicate their proposals."""
     if agents < 1:
@@ -680,7 +719,7 @@ def generate_llm_candidate_cluster(
     for index in range(agents):
         role = roles[index % len(roles)]
         for candidate in generate_llm_candidates(
-            model, available, market_context, per_agent, role=role
+            model, available, market_context, per_agent, role=role, audit=audit
         ):
             expression = candidate.expression
             candidate_id = candidate.candidate_id
@@ -890,8 +929,9 @@ def evaluate_score(
             coverage=coverage,
             turnover=turnover,
         )
-    ic_std = float(ic.std())
-    rank_ic_std = float(rank_ic.std())
+    # Paper Appendix B.2 defines sigma with 1/T (population variance).
+    ic_std = float(ic.std(ddof=0))
+    rank_ic_std = float(rank_ic.std(ddof=0))
     return Metric(
         rows=int(len(values)),
         mean_daily_ic=float(ic.mean()),
@@ -1236,6 +1276,8 @@ def main() -> None:
     parser.add_argument("--snapshot-dir", type=Path, default=None, help="Write-once archive; defaults to <output-dir>/snapshots")
     parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy feature-row label-date inference")
     parser.add_argument("--calendar", type=Path, help="Reference session CSV; validate label horizons against market sessions")
+    parser.add_argument("--label-mode", choices=("execution", "paper_close"), default="execution",
+                        help="Execution-aligned T+1 open to T+h close (default), or paper-style T close to T+h close for Miner diagnostics")
     parser.add_argument("--train-start", default="2016-01-04")
     parser.add_argument("--train-end", default="2022-12-30")
     parser.add_argument("--validation-start", default="2023-01-03")
@@ -1351,18 +1393,23 @@ def main() -> None:
         frame = visible_panel(frame, as_of)
     except ValueError as exc:
         parser.error(str(exc))
+    has_close_target_5d = "target_5d" in frame
     frame["target_5d"] = derive_target_5d(frame)
     has_execution_target_5d = "target_open_close_5d" in frame
     frame["target_open_close_5d"] = derive_execution_target_5d(frame)
     frame["one_day_reversal"] = -frame["return_1d"]
     available = [column for column in frame.columns if is_feature_column(column) and column not in BASELINE_FEATURES]
-    # The signal is generated at T close and traded at T+1 open.  Use the
-    # execution-aligned labels throughout Miner; the 5-day label is T+1 open
-    # to T+5 close.  Legacy files fall back to close-to-close target_5d.
-    one_day_target_column = (
-        "target_open_close" if "target_open_close" in frame else "target_1d"
-    )
-    five_day_target_column = "target_open_close_5d"
+    # Keep execution-aligned labels as the pipeline default. Paper Algorithm 1
+    # defines returns from T to T+h, not from T+1 open to T+h close; allow a
+    # separate Miner-only diagnostic without changing the execution policy.
+    has_execution_1d = "target_open_close" in frame
+    if args.label_mode == "paper_close":
+        if "target_1d" not in frame or not has_close_target_5d:
+            parser.error("paper_close requires explicit target_1d and target_5d")
+        one_day_target_column, five_day_target_column = "target_1d", "target_5d"
+    else:
+        one_day_target_column = "target_open_close" if has_execution_1d else "target_1d"
+        five_day_target_column = "target_open_close_5d"
     # Never use future-label missingness to decide the signal-time universe.
     # Truncate features first, then resolve maturity from explicit raw label
     # dates (or an auditable legacy fallback). Censor all unsettled targets.
@@ -1376,8 +1423,11 @@ def main() -> None:
     targets = {1: frame[one_day_target_column], 5: frame[five_day_target_column]}
     target_sources = {
         "1d": one_day_target_column,
-        "5d": "target_open_close_5d" if has_execution_target_5d else "target_5d_fallback",
+        "5d": ("target_5d" if args.label_mode == "paper_close" else
+               "target_open_close_5d" if has_execution_target_5d else "target_5d_fallback"),
     }
+    if previous_registry and previous_registry.get("selection", {}).get("target_sources") not in (None, target_sources):
+        parser.error("Cannot inherit a registry evaluated under different label targets; use a fresh output directory")
 
     train_mask = dates.between(*windows["train"])
     horizon_masks = {
@@ -1392,6 +1442,8 @@ def main() -> None:
         "visible_first_session": str(dates.min().date()),
         "visible_last_session": str(dates.max().date()),
         "label_end_source": {str(h): label_end_source(frame, h) for h in EVALUATION_HORIZONS},
+        "label_mode": args.label_mode,
+        "target_sources": target_sources,
         "require_explicit_label_dates": args.require_explicit_label_dates,
         "reference_calendar": str(args.calendar) if args.calendar else None,
         "windows": windows,
@@ -1405,6 +1457,7 @@ def main() -> None:
         },
     }
 
+    llm_candidate_audit: List[Dict[str, object]] = []
     if args.candidate_file:
         candidates = load_candidates(args.candidate_file, available)
         generator = "external_json"
@@ -1433,6 +1486,7 @@ def main() -> None:
                 market_context,
                 args.llm_count,
                 args.llm_agents,
+                audit=llm_candidate_audit,
             )
             generator = f"llm_cluster:{args.llm_model}:{args.llm_agents}"
     else:
@@ -1666,6 +1720,10 @@ def main() -> None:
     baseline_metrics = baseline_horizons["1"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     registry_path.parent.mkdir(parents=True, exist_ok=True)
+    if llm_candidate_audit:
+        (args.output_dir / "llm_candidate_audit.json").write_text(
+            json.dumps(llm_candidate_audit, indent=2, ensure_ascii=False) + "\n"
+        )
     factor_library_path = args.output_dir / "factor_library.json"
     library_payload = {
         "library_version": "miner-factor-library-v2",

@@ -1,0 +1,20 @@
+[
+  {"candidate_id":"alpha158_kmid2_raw","features":["alpha158_kmid2"],"expression":{"op":"feature","feature":"alpha158_kmid2"},"hypothesis":"Candle body relative to same-day range may reflect intraday pressure"},
+  {"candidate_id":"alpha158_kup2_raw","features":["alpha158_kup2"],"expression":{"op":"feature","feature":"alpha158_kup2"},"hypothesis":"Upper wick fraction may capture intraday selling pressure"},
+  {"candidate_id":"alpha158_klow2_raw","features":["alpha158_klow2"],"expression":{"op":"feature","feature":"alpha158_klow2"},"hypothesis":"Lower wick fraction may capture intraday buying pressure"},
+  {"candidate_id":"alpha158_ksft2_raw","features":["alpha158_ksft2"],"expression":{"op":"feature","feature":"alpha158_ksft2"},"hypothesis":"Close relative to the daily range may contain short-term information"},
+  {"candidate_id":"alpha158_roc10_raw","features":["alpha158_roc10"],"expression":{"op":"feature","feature":"alpha158_roc10"},"hypothesis":"Ten-session close ratio captures intermediate momentum or reversal"},
+  {"candidate_id":"alpha158_roc30_raw","features":["alpha158_roc30"],"expression":{"op":"feature","feature":"alpha158_roc30"},"hypothesis":"Thirty-session close ratio captures a slower trend"},
+  {"candidate_id":"alpha158_ma10_raw","features":["alpha158_ma10"],"expression":{"op":"feature","feature":"alpha158_ma10"},"hypothesis":"Price relative to its ten-session mean may revert or persist"},
+  {"candidate_id":"alpha158_ma30_raw","features":["alpha158_ma30"],"expression":{"op":"feature","feature":"alpha158_ma30"},"hypothesis":"Price relative to its thirty-session mean may revert or persist"},
+  {"candidate_id":"alpha158_std10_raw","features":["alpha158_std10"],"expression":{"op":"feature","feature":"alpha158_std10"},"hypothesis":"Ten-session normalized price dispersion may proxy short-term risk"},
+  {"candidate_id":"alpha158_std30_raw","features":["alpha158_std30"],"expression":{"op":"feature","feature":"alpha158_std30"},"hypothesis":"Thirty-session normalized price dispersion may proxy persistent risk"},
+  {"candidate_id":"alpha158_max20_raw","features":["alpha158_max20"],"expression":{"op":"feature","feature":"alpha158_max20"},"hypothesis":"Distance from a recent high may proxy breakout or mean reversion"},
+  {"candidate_id":"alpha158_min20_raw","features":["alpha158_min20"],"expression":{"op":"feature","feature":"alpha158_min20"},"hypothesis":"Distance from a recent low may proxy downside recovery"},
+  {"candidate_id":"alpha158_qtlu20_raw","features":["alpha158_qtlu20"],"expression":{"op":"feature","feature":"alpha158_qtlu20"},"hypothesis":"Upper historical price quantile relative to close may capture trend"},
+  {"candidate_id":"alpha158_qtld20_raw","features":["alpha158_qtld20"],"expression":{"op":"feature","feature":"alpha158_qtld20"},"hypothesis":"Lower historical price quantile relative to close may capture drawdown"},
+  {"candidate_id":"alpha158_rsv20_raw","features":["alpha158_rsv20"],"expression":{"op":"feature","feature":"alpha158_rsv20"},"hypothesis":"Close position in a twenty-session high-low range may capture pressure"},
+  {"candidate_id":"alpha158_corr20_raw","features":["alpha158_corr20"],"expression":{"op":"feature","feature":"alpha158_corr20"},"hypothesis":"Price-volume correlation may capture participation in trends"},
+  {"candidate_id":"alpha158_cntd20_raw","features":["alpha158_cntd20"],"expression":{"op":"feature","feature":"alpha158_cntd20"},"hypothesis":"Difference in recent up and down day frequencies measures trend breadth"},
+  {"candidate_id":"alpha158_sumd20_raw","features":["alpha158_sumd20"],"expression":{"op":"feature","feature":"alpha158_sumd20"},"hypothesis":"Directional fraction of recent absolute price moves captures return asymmetry"}
+]

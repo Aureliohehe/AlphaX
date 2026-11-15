@@ -1,0 +1,74 @@
+[
+  {
+    "candidate_id": "explore_momentum_10d",
+    "op": "feature",
+    "features": ["return_10d"],
+    "hypothesis": "10-day price trend may persist over short horizons"
+  },
+  {
+    "candidate_id": "explore_momentum_20d",
+    "op": "feature",
+    "features": ["return_20d"],
+    "hypothesis": "20-day price trend may capture intermediate momentum or reversal"
+  },
+  {
+    "candidate_id": "explore_momentum_60d",
+    "op": "feature",
+    "features": ["return_60d"],
+    "hypothesis": "60-day price trend may capture a slower cross-sectional effect"
+  },
+  {
+    "candidate_id": "explore_trend_sma20",
+    "op": "feature",
+    "features": ["sma_20_ratio"],
+    "hypothesis": "Distance from the 20-day mean may measure trend or reversion"
+  },
+  {
+    "candidate_id": "explore_overbought_rsi14",
+    "op": "feature",
+    "features": ["rsi_14"],
+    "hypothesis": "RSI may identify short-horizon overbought and oversold stocks"
+  },
+  {
+    "candidate_id": "explore_bollinger_deviation",
+    "op": "feature",
+    "features": ["bollinger_z"],
+    "hypothesis": "Normalized distance to a rolling price mean may revert"
+  },
+  {
+    "candidate_id": "explore_stochastic14",
+    "op": "feature",
+    "features": ["stochastic_14"],
+    "hypothesis": "Close position within recent range may reflect pressure or exhaustion"
+  },
+  {
+    "candidate_id": "explore_volatility5",
+    "op": "feature",
+    "features": ["volatility_5d"],
+    "hypothesis": "Short-term realized volatility may proxy risk and reversal"
+  },
+  {
+    "candidate_id": "explore_atr14",
+    "op": "feature",
+    "features": ["atr_14_ratio"],
+    "hypothesis": "Price-range volatility may contain information distinct from close-to-close volatility"
+  },
+  {
+    "candidate_id": "explore_volume_shock",
+    "op": "feature",
+    "features": ["volume_change_1d"],
+    "hypothesis": "One-day volume shock may precede information diffusion or mean reversion"
+  },
+  {
+    "candidate_id": "explore_intraday_pressure",
+    "op": "feature",
+    "features": ["open_close_return"],
+    "hypothesis": "Signal-day open-to-close pressure may carry into or reverse on the next session"
+  },
+  {
+    "candidate_id": "explore_trend_acceleration",
+    "op": "difference",
+    "features": ["return_5d", "return_20d"],
+    "hypothesis": "The difference between fast and slow returns may identify changes in trend"
+  }
+]

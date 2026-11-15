@@ -24,7 +24,7 @@ python3 download_market_data.py --workers 8
 
 ## 重要可复现性约定
 
-1. 成分股文件固定为 datasets/s-and-p-500-companies 在 2025-08-12 的 commit，而不是使用会变化的 master，避免在 2026-02-27 之后运行时引入成分股未来信息。
+1. 成分股文件固定为 datasets/s-and-p-500-companies 在 2025-08-12 的 commit，而不是使用会变化的 master；但它**仍是当前快照，不是 2016–2026 的 point-in-time 历史成分股**。已核实特征面板有 130,418 行早于股票在该快照的 `Date added`，历史退出股票也未包括；不能把固定 commit 误称为消除成分股前视。独立日历及数据时点审计见 [`../alphacrafter/DATA_PROVENANCE_AUDIT.md`](../alphacrafter/DATA_PROVENANCE_AUDIT.md)。
 2. Yahoo Finance 当前无法返回其中 14 个股票代码的完整历史序列，因此当前有效股票数为 489/503；具体失败项见 `data/raw/sp500/manifest.json`。后续训练和 Agent 实验必须使用同一个有效股票集合。
 3. `adj_close` 用于收益/标签计算；OHLC 用于技术特征。不要把未来日期数据用于训练。
 4. 这一步只有价格量数据。论文提到的 Lixinger 基本面、财务报表和新闻还没有公开可复现的下载入口；若要严格复现“technical + fundamental”的 XGBoost，需要补齐该部分，并在数据可用日期上做 point-in-time 对齐，避免财报发布日期之后才可见的数据泄漏。

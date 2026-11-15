@@ -41,7 +41,17 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 | `--cost-rate` | 每腿成交额 1bp |
 | `--annual-risk-free-rate` | 3.81% |
 
-注意：当前旧特征缓存未覆盖到完整的 2026-02-27，默认完整窗口会被拒绝。应先重建到新文件并核查日期，或显式缩短 `--holdout-end` 并说明窗口差异，运行器不会默默缩短日期冒充论文实验。
+注意：旧特征缓存未覆盖到完整的 2026-02-27。已另建带原始标签结束日的本地文件 `machine-learn/data/processed/sp500_features_label_dates.csv.gz`（不覆盖旧缓存），并输出同名 `.calendar.csv` 和 `.manifest.json`。该文件覆盖到 2026-02-27；预热期前 119 个原始交易日没有完整技术特征。完整窗口严格预检可使用：
+
+```bash
+python3 quant-method/alphacrafter/run_pipeline.py \
+  --input quant-method/machine-learn/data/processed/sp500_features_label_dates.csv.gz \
+  --calendar quant-method/machine-learn/data/processed/sp500_features_label_dates.csv.gz.calendar.csv \
+  --require-explicit-label-dates --allow-feature-warmup-sessions 120 \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_pipeline_label_dates --dry-run
+```
+
+实测输出 13 轮计划、实际预热缺失 119 天，预热之后无缺失的全市场交易日；对比报价并集日历检查 1,159,161 行特征的 1/5 日标签结束日，均无错位。预热例外必须显式设置，只允许连续的前缀且数量不超过限制；中间缺日仍失败。此日历是原始报价日期的并集，**未经交易所权威验证**；预检仅证明日期覆盖，尚未运行完整流程，也未认证历史成分股或数据发布时点。
 
 候选可以是确定性模板（通过 `--max-pairs`、`--max-temporal` 限制数量），也可以使用 `--candidate-file` 固定 JSON/AST。外部候选需要调用者确保其假设在实验开始前已确定；文件哈希只能证明内容不变，不能证明来源无未来信息。当前运行器不接入历史 LLM 调用，也不提供放宽 Miner/Trader 门槛的开关。
 
@@ -115,6 +125,12 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 `events.jsonl` 确认：前两轮 → 验证期 Screener → `trader_frozen` → 第三轮 → 留出期 Screener。
 
 **结果：无可行策略，冻结为空仓。** 验证及留出各有 9 个已兑现信号日；留出收益 0、回撤 0、Sharpe 未定义。这只证明流程在真实数据上能完成滚动维护和拒绝失败策略，不代表收益复现成功。
+
+## 已执行：完整窗口固定 3 候选收益诊断
+
+使用新建的显式标签日期特征缓存与报价并集日历，固定先前冒烟实验的 `return_5d`、`volatility_20d`、`volume_ratio_20d` 三个候选；默认 90 日维护、严格 Miner/Trader 门槛，完整输出在 `machine-learn/data/qlib/alphacrafter_pipeline_fixed3_full/`（`status.json` 为 `completed`，本地未纳入 Git）。除 `--allow-feature-warmup-sessions 120` 和固定候选文件外，窗口与交易成本使用运行器默认值。
+
+**13 轮因子准入均为 0，验证期 249 个执行日、留出期 540 个执行日均无信号。** 三个 Trader 配置验证收益均为 0、Sharpe 未定义，没有可行配置，故留出期全现金：累计/年化收益 **0%**、最大回撤 **0%**、Sharpe **未定义**、实际投资天数 0。同一日内收益窗口、**未扣交易费用**的逐日有效报价股票等权参考值累计收益 **9.82%**，相对此参考值的差额 **-9.82 个百分点**。这是完整流程的拒绝结果，不是论文策略收益，也不能通过看完留出结果后改候选/门槛仍声称同一留出集未使用。只使用 Trader 选择期指标的逐项失败原因见 [`GATE_DIAGNOSIS.md`](GATE_DIAGNOSIS.md)。
 
 ## 回归测试与下一步
 
