@@ -48,6 +48,8 @@ def load_factor_library(path: Path) -> List[Dict[str, object]]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict):
         raise ValueError("Factor library must be a JSON object")
+    if payload.get("artifact_type") == "research_candidate_pool_v1":
+        raise ValueError("Research pool is not a trading factor library; freeze and validate a strategy separately")
     factors = payload.get("factors", payload.get("accepted_factors", []))
     if not isinstance(factors, list):
         raise ValueError("Factor library must contain factors or accepted_factors")
@@ -467,6 +469,8 @@ def main() -> None:
         timeline = load_timeline(args.library_history)
     else:
         payload = json.loads(args.factor_library.read_text())
+        if isinstance(payload, dict) and payload.get("artifact_type") == "research_candidate_pool_v1":
+            parser.error("Research pool is not a trading factor library; use independent strategy validation")
         if args.allow_retrospective_library:
             timeline = [(dates[0], {"factors": load_factor_library(args.factor_library)})]
         else:

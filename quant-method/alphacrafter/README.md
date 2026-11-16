@@ -1,5 +1,7 @@
 # AlphaCrafter 复现工程
 
+已新增 [两层准入](TWO_LAYER_ADMISSION.md)：按周期筛选研究候选，再对冻结的组合做独立策略验证。CSI300 当前进入 1 日研究池 13 个、5 日 0 个；[跨日组合收益测试](CSI300_PORTFOLIO_EXPERIMENT.md)的三个配置在 2022–2023 验证期扣费亏损，均未通过，未评估 2024–2025 留出收益。原严格论文对照结果保持不变。
+
 **当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。固定三因子的准入失败明细见 [`GATE_DIAGNOSIS.md`](GATE_DIAGNOSIS.md)，后续固定十二个技术候选的探索性结果见 [`CANDIDATE_EXPLORATION.md`](CANDIDATE_EXPLORATION.md)，论文指标/标签口径对照见 [`METRIC_AUDIT.md`](METRIC_AUDIT.md)，raw 与 RankNorm 的配对量化见 [`RANKNORM_AUDIT.md`](RANKNORM_AUDIT.md)，Qlib Alpha158 候选与 GitHub 调研见 [`ALPHA158_PRESET_REVIEW.md`](ALPHA158_PRESET_REVIEW.md)，严格单因子与固定 XGBoost 模型两条探索路线见 [`TWO_TRACK_EXPERIMENT.md`](TWO_TRACK_EXPERIMENT.md)，数据时点/独立日历障碍见 [`DATA_PROVENANCE_AUDIT.md`](DATA_PROVENANCE_AUDIT.md)；严格实验仍未产生可行策略；另有明确降低准入门槛、已跑出模拟持仓但**不能当作论文或实盘收益**的 LLM Agent 执行演示，见 [`AGENT_EXECUTION_DEMO.md`](AGENT_EXECUTION_DEMO.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。
 
 Miner Harness 不依赖 LLM 即可运行：
@@ -84,6 +86,28 @@ conda run -n tradingagents python quant-method/machine-learn/qlib_portfolio_back
 已进一步完成嵌套滚动因子准入：训练集确定方向，前一年度验证集选择因子数量和净收益，后续年度只做前向评估，结果见 [`MINER_WALK_FORWARD.md`](MINER_WALK_FORWARD.md)。滚动版本最终留出收益为 **25.55%**，相对基准低 **14.69 个百分点**，暂不建议启用 Miner-lite 作为默认策略。
 
 ## 接入未来 LLM Miner
+
+### 训练内反馈搜索（可选）
+
+首轮真实 DeepSeek 实验已完成：30 提案、28 唯一候选、严格准入 0 个，见 [反馈搜索实验报告](FEEDBACK_SEARCH_EXPERIMENT.md)。
+
+新增 CSI300 数据测试：52 个单字段因子 + 28 个冻结 LLM 组合，2010–2018 训练、2019–2021 准入，严格通过 0/80；有局部短期排序信号，2022–2025 留出指标未计算。见 [CSI300 因子测试](CSI300_FACTOR_EXPERIMENT.md) 和 [数据审计](CSI300_DATA_AUDIT.md)。
+
+默认仍为单轮生成。增加 `--search-rounds` 可启用有限预算的研究闭环：
+
+```bash
+python3 quant-method/alphacrafter/miner_lite.py \
+  --llm-model deepseek-chat \
+  --search-rounds 3 --search-budget 30 --search-batch-size 10 \
+  --search-folds 3 \
+  --output-dir quant-method/machine-learn/data/qlib/miner_feedback_new
+```
+
+需要配置模型环境变量；该命令会调用外部模型。反馈搜索仅支持 direct 后端，不能同时指定候选文件。此模式用 `search-budget` 和 `search-batch-size` 控制候选槽位，忽略 `llm-count`；重复或不足的提案也消耗槽位，不自动补抽。预算限制请求的候选数量，不限制 token 或费用；模型超额返回时截断。
+
+搜索器仅接收训练窗口的行，先截断跨训练期末的标签，再将交易日均分成 `search-folds + 1` 个连续块。第一块作初始方向估计；后续每折用此前所有块的已兑现 1 日标签定方向，评价下一块的 1/5 日表现，并在每块末尾分别 purge。每块至少需要 5 个交易日（实际研究应使用远长于此的窗口）。反馈包含各折 IC、Rank IC、ICIR、命中率、覆盖率、换手及失败原因；后续提案接收此前全部反馈，跨轮按表达式与 ID 去重。
+
+`search_feedback.json` 保存每轮预算和逐候选诊断。全部唯一候选冻结后才进入原训练/验证准入逻辑，**不按折内最好成绩自动准入，也不更改正式门槛**。搜索折已被用于自适应研究，不是独立样本外；验证/留出指标不反馈给生成器。该功能没有修复历史成分股数据问题，也不保证找到有效因子。相似度目前只处理表达式重复，尚不处理信号相关性或极端值归因。
 
 LLM 不需要修改验证器，只需输出候选 JSON：
 

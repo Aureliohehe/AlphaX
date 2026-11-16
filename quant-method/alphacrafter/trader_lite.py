@@ -261,10 +261,16 @@ def main() -> None:
     parser.add_argument("--initial-cash", type=float, default=1_000_000.0)
     parser.add_argument("--calendar", type=Path, help="Reference market-session CSV; otherwise use observed feature dates")
     parser.add_argument("--require-explicit-label-dates", action="store_true")
+    parser.add_argument("--research-pool", type=Path, help="Optional research-stage provenance; strategy validation must follow its cutoff")
+    parser.add_argument("--research-horizon", type=int, choices=(1, 5), default=1)
     args = parser.parse_args()
     try:
         validate_intervals(args.selection_start, args.selection_end, args.backtest_start, args.backtest_end)
         configs = parse_configs(args.configs)
+        if args.research_pool:
+            from admission import validate_trader_pool
+            pool = json.loads(args.research_pool.read_text())
+            validate_trader_pool(pool, args.research_horizon, args.selection_start)
     except ValueError as exc:
         parser.error(str(exc))
     frame = load_inputs(args.predictions, args.input, calendar_path=args.calendar,
@@ -280,6 +286,10 @@ def main() -> None:
     metrics = summarize(report, args.initial_cash, args.annual_risk_free_rate)
     summary = {
         "trader_version": "trader-lite-v2",
+        "admission_stage": "formal_strategy_validation",
+        "research_pool": file_fingerprint(args.research_pool) if args.research_pool else None,
+        "research_horizon": args.research_horizon if args.research_pool else None,
+        "factor_gate": "research_eligibility_not_original_joint_factor_gate" if args.research_pool else "upstream_signal_provenance",
         "inputs": {"features": file_fingerprint(args.input), "predictions": file_fingerprint(args.predictions)},
         "runtime": {"numpy": np.__version__, "pandas": pd.__version__},
         "label_end_source": label_end_source(frame, 1),
@@ -296,7 +306,7 @@ def main() -> None:
         "cost_convention": "cost_rate * (entry_notional + exit_notional), relative to opening NAV",
         "limitations": [
             "Intraday proxy, not the paper's persistent-holdings simulator; no margin, borrow, liquidity or slippage model",
-            "Input predictions must independently satisfy point-in-time factor admission; this tool cannot certify their provenance",
+            "Input predictions require independently frozen, time-correct signal construction; research eligibility alone does not certify provenance",
             "Benchmark is gross available-asset equal-weight intraday return, not the S&P 500 index",
             "No LLM-generated strategy code or regime-conditioned parameter search",
         ],

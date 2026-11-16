@@ -707,6 +707,7 @@ def generate_llm_candidate_cluster(
     count: int,
     agents: int,
     audit: Optional[List[Dict[str, object]]] = None,
+    strict_budget: bool = False,
 ) -> List[Candidate]:
     """Run independent specialist Miner agents and deduplicate their proposals."""
     if agents < 1:
@@ -718,8 +719,11 @@ def generate_llm_candidate_cluster(
     per_agent = max(1, int(np.ceil(count / agents)))
     for index in range(agents):
         role = roles[index % len(roles)]
+        requested = min(per_agent, count - index * per_agent if strict_budget else count - len(proposals))
+        if requested <= 0:
+            break
         for candidate in generate_llm_candidates(
-            model, available, market_context, per_agent, role=role, audit=audit
+            model, available, market_context, requested, role=role, audit=audit
         ):
             expression = candidate.expression
             candidate_id = candidate.candidate_id
@@ -1256,6 +1260,8 @@ def main() -> None:
         default=base / "data" / "qlib" / "alphacrafter_miner_lite",
     )
     parser.add_argument("--candidate-file", type=Path, default=None)
+    parser.add_argument("--research-market", choices=("us", "cn", "unknown"), default="unknown",
+                        help="Market metadata for the separate horizon-specific research pool")
     parser.add_argument(
         "--registry",
         type=Path,
@@ -1293,6 +1299,11 @@ def main() -> None:
         ),
     )
     parser.add_argument("--llm-count", type=int, default=40)
+    parser.add_argument("--search-rounds", type=int, default=1,
+                        help="Opt-in training-only feedback search; >1 requires direct LLM backend")
+    parser.add_argument("--search-budget", type=int, default=40, help="Total proposal slots across feedback rounds")
+    parser.add_argument("--search-batch-size", type=int, default=10)
+    parser.add_argument("--search-folds", type=int, default=3)
     parser.add_argument(
         "--llm-orchestrator",
         choices=("direct", "langgraph"),
@@ -1367,6 +1378,10 @@ def main() -> None:
         help="Maximum train/validation cross-sectional rank turnover (paper threshold: 0.40)",
     )
     args = parser.parse_args()
+    if min(args.search_rounds, args.search_budget, args.search_batch_size) < 1 or args.search_folds < 2:
+        parser.error("Search budgets/rounds must be positive and folds >=2")
+    if args.search_rounds > 1 and (not args.llm_model or args.candidate_file or args.llm_orchestrator != "direct"):
+        parser.error("Feedback search requires --llm-model, direct backend and no --candidate-file")
     if args.maintenance_interval_days < 1:
         parser.error("--maintenance-interval-days must be positive")
     registry_path = args.registry or args.output_dir / "registry.json"
@@ -1458,6 +1473,7 @@ def main() -> None:
     }
 
     llm_candidate_audit: List[Dict[str, object]] = []
+    search_report = None
     if args.candidate_file:
         candidates = load_candidates(args.candidate_file, available)
         generator = "external_json"
@@ -1465,7 +1481,33 @@ def main() -> None:
         if args.llm_agents < 1:
             parser.error("--llm-agents must be positive")
         market_context = build_market_context(frame, train_mask)
-        if args.llm_orchestrator == "langgraph":
+        if args.search_rounds > 1:
+            from miner_search import run_search
+
+            # Physically restrict the search API to training rows and censor
+            # labels crossing the training cutoff before any feedback is built.
+            search_frame = frame.loc[train_mask].copy()
+            cutoff = min(session_date(args.train_end), as_of)
+            search_ends = {h: ends.loc[train_mask].copy() for h, ends in label_ends.items()}
+            search_targets = {h: target.loc[train_mask].where(search_ends[h] <= cutoff)
+                              for h, target in targets.items()}
+
+            def propose(count, feedback):
+                context = market_context + "\nTraining-only research feedback: " + feedback
+                context += ("\nImprove weak hypotheses using these diagnostics. Avoid previously proposed expressions "
+                            "and IDs. These folds are search data, not independent validation. "
+                            "Return at most the requested number of proposals.")
+                return generate_llm_candidate_cluster(args.llm_model, available, context, count,
+                                                      min(args.llm_agents, count), audit=llm_candidate_audit,
+                                                      strict_budget=True)
+
+            candidates, search_report = run_search(
+                propose, search_frame, available, search_targets, search_ends,
+                rounds=args.search_rounds, budget=args.search_budget,
+                batch_size=args.search_batch_size, folds=args.search_folds,
+            )
+            generator = f"llm_feedback_search:{args.llm_model}"
+        elif args.llm_orchestrator == "langgraph":
             try:
                 from langgraph_miner import generate_langgraph_candidates
 
@@ -1719,6 +1761,10 @@ def main() -> None:
         }
     baseline_metrics = baseline_horizons["1"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if search_report is not None:
+        (args.output_dir / "search_feedback.json").write_text(
+            json.dumps(search_report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        )
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     if llm_candidate_audit:
         (args.output_dir / "llm_candidate_audit.json").write_text(
@@ -1753,6 +1799,12 @@ def main() -> None:
     (args.output_dir / "candidates.json").write_text(
         json.dumps(candidate_payload, indent=2, ensure_ascii=False) + "\n"
     )
+    from admission import build_research_pool
+    research_pool, research_assessments = build_research_pool(
+        results, candidate_payload, temporal_audit, args.research_market
+    )
+    for name, payload in (("research_pool.json", research_pool), ("research_assessments.json", research_assessments)):
+        (args.output_dir / name).write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
     (args.output_dir / "candidate_metrics.json").write_text(
         json.dumps(results, indent=2, ensure_ascii=False, allow_nan=True) + "\n"
     )

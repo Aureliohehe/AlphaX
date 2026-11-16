@@ -185,7 +185,7 @@ class TemporalIntegrationTests(unittest.TestCase):
             changed.to_csv(root / "changed.csv", index=False)
             self.run_miner(root, "original.csv", "a")
             self.run_miner(root, "changed.csv", "b")
-            for name in ("candidate_metrics.json", "factor_library.json", "predictions.csv"):
+            for name in ("candidate_metrics.json", "factor_library.json", "predictions.csv", "research_pool.json", "research_assessments.json"):
                 self.assertEqual((root / "a" / name).read_text(), (root / "b" / name).read_text(), name)
             library = json.loads((root / "a/factor_library.json").read_text())
             self.assertEqual(len(library["factors"]), 1)  # unchanged acceptance, not an empty-library tautology
