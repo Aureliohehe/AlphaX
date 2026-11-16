@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exploratory agent factor -> frozen snapshot -> Screener -> intraday trades.
+"""Exploratory agent factor -> retrospective library -> Screener -> local intraday fills.
 
 NOT AlphaCrafter's paper gates or a broker execution. The admission rule is a
 separate, explicitly weak 1-day demo rule. Uses historical data already viewed
@@ -24,6 +24,57 @@ HERE = Path(__file__).resolve().parent
 ADMISSION_RULE = "1d_train_and_validation_positive_ic_rankic_icir_rankicir_hit_above_half_coverage_above_90_turnover_below_40"
 COST_RATE = 0.0001
 CONFIG = TraderConfig(beta=0.1, gamma=1.0, nlong=10, nshort=0)
+INITIAL_CASH = 1_000_000.0
+
+
+def simulated_orders(frame: pd.DataFrame, report: pd.DataFrame, positions: pd.DataFrame,
+                     cost_rate: float, initial_cash: float = INITIAL_CASH) -> pd.DataFrame:
+    """Produce auditable notional-only open/close fills, not broker orders or shares.
+
+    Features contain open-to-close returns but no executable open/close prices, so
+    price and share quantity must not be invented. Fees match Trader's two legs.
+    """
+    columns = ["signal_date", "execution_date", "ticker", "leg", "side",
+               "notional", "fee", "factor_weight"]
+    if positions.empty:
+        return pd.DataFrame(columns=columns)
+    if positions.duplicated(["date", "ticker"]).any():
+        raise ValueError("Duplicate simulated position")
+    lookup = frame.set_index(["date", "ticker"])[["execution_date", "target_open_close"]]
+    if not lookup.index.is_unique:
+        raise ValueError("Duplicate execution label")
+    rows = []
+    nav = initial_cash
+    held = {(pd.Timestamp(row.date), row.ticker): row.weight for row in positions.itertuples()}
+    for date, day in report.iterrows():
+        date = pd.Timestamp(date)
+        weights = {ticker: weight for (signal_date, ticker), weight in held.items() if signal_date == date}
+        if len(weights) != int(day["selected_assets"]):
+            raise ValueError("Position count differs from daily ledger")
+        entry = exit_ = fee = gross = 0.0
+        for ticker, weight in sorted(weights.items()):
+            execution_date, ret = lookup.loc[(date, ticker)]
+            if pd.isna(execution_date) or pd.Timestamp(execution_date) != pd.Timestamp(day["execution_date"]) or not np.isfinite(ret) or ret < -1:
+                raise ValueError("Selected asset has no valid next-session execution return")
+            open_notional = nav * abs(weight)
+            close_notional = open_notional * (1 + ret)
+            for leg, side, amount in (("open", "buy" if weight > 0 else "sell_short", open_notional),
+                                      ("close", "sell" if weight > 0 else "buy_to_cover", close_notional)):
+                rows.append({"signal_date": date, "execution_date": execution_date,
+                             "ticker": ticker, "leg": leg, "side": side,
+                             "notional": amount, "fee": amount * cost_rate, "factor_weight": weight})
+            entry += open_notional
+            exit_ += close_notional
+            fee += cost_rate * (open_notional + close_notional)
+            gross += nav * weight * ret
+        if not np.isclose(entry + exit_, nav * day["traded_notional"], atol=1e-6) or not np.isclose(fee, nav * day["transaction_cost"], atol=1e-6):
+            raise ValueError("Order turnover/fees do not reconcile with Trader")
+        if not np.isclose((gross - fee) / nav, day["net_return"], atol=1e-10):
+            raise ValueError("Order P&L does not reconcile with Trader")
+        nav *= 1 + day["net_return"]
+    if len(rows) != len(positions) * 2:
+        raise ValueError("Unmatched simulated orders")
+    return pd.DataFrame(rows, columns=columns)
 
 
 def demo_gate(record: dict) -> bool:
@@ -109,7 +160,7 @@ def main() -> None:
         "admission_rule": ADMISSION_RULE, "admission_cutoff": args.admission_as_of,
         "signal_dates": [args.selection_start, args.selection_end], "config": CONFIG.__dict__,
         "cost_rate_per_leg": COST_RATE, "min_suitability": 0.02, "source_fingerprints": pinned,
-        "warning": "Weakened 1d admission, no paper Trader risk gate; 2023 was previously viewed; LLM model memory not certified PIT; current snapshot universe is biased",
+        "warning": "Weakened 1d admission, no paper Trader risk gate; 2023 was previously viewed; LLM model memory not certified PIT; current snapshot universe is biased; fills have notional and return only, no executable quotes or share quantities",
     }
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (args.output_dir / "admission_decisions.json").write_text(json.dumps(decisions, indent=2) + "\n")
@@ -135,9 +186,17 @@ def main() -> None:
                         calendar_path=args.calendar, require_explicit_label_dates=True)
     report, positions = simulate(frame, CONFIG, args.selection_start, args.selection_end, COST_RATE)
     if positions.empty or not (report["selected_assets"] > 0).any():
-        raise ValueError("No actual simulated orders; do not claim successful demo")
+        raise ValueError("No simulated positions; do not claim successful demo")
+    selection = pd.read_csv(screen / "selection.csv")
+    selected_ids = set(selection["candidate_id"])
+    if not selected_ids or not selected_ids <= {item["candidate_id"] for item in accepted}:
+        raise ValueError("No admitted library factor was selected by Screener")
+    orders = simulated_orders(frame, report, positions, COST_RATE)
+    if orders.empty or not set(orders["signal_date"]).issubset(set(pd.to_datetime(selection["date"]))):
+        raise ValueError("Orders have no corresponding factor selection")
     report.to_csv(args.output_dir / "trades_daily.csv")
     positions.to_csv(args.output_dir / "positions.csv", index=False)
+    orders.to_csv(args.output_dir / "simulated_orders.csv", index=False)
     for name, expected in pinned.items():
         if file_fingerprint(Path(name)) != expected:
             raise ValueError(f"Input/code changed during demo: {name}")
@@ -146,7 +205,8 @@ def main() -> None:
                "strict_paper_admitted": 0, "demo_admitted_factors": [x["candidate_id"] for x in accepted],
                "signal_rows": int(pd.read_csv(predictions).shape[0]),
                "invested_days": int((report["selected_assets"] > 0).sum()),
-               "position_rows": len(positions), "metrics": summarize(report, 1_000_000, 0.0381),
+               "position_rows": len(positions), "simulated_order_legs": len(orders),
+               "selected_factor_ids": sorted(selected_ids), "metrics": summarize(report, INITIAL_CASH, 0.0381),
                "limitations": manifest["warning"]}
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     (args.output_dir / "status.json").write_text(json.dumps({"status": "completed_exploratory_demo"}) + "\n")

@@ -50,6 +50,14 @@ python3 build_features.py
 
 指标只使用当日及之前的数据；标签使用未来交易日数据。Alpha158 风格特征是本项目的 pandas 可复现实现，表达式语义参考 Qlib，但不依赖 Qlib 运行特征生成。前 120 个交易日作为指标预热期，不进入训练/验证/回测样本。
 
+## Qlib 行情三组回测（研究性对照）
+
+借鉴 QuantaAlpha 的官方特征／自定义特征／组合特征实验结构，已用本地 Qlib provider 中的 **Qlib 官方 Alpha158 固定 20 特征**、两个事后 LLM 候选及组合做同口径 LightGBM + TopkDropout 扣费比较，详见 [`QLIB_THREE_WAY.md`](QLIB_THREE_WAY.md)。2022–2023 已被查看、数据成员为当前快照，结果仅为历史研究诊断，不是新样本外收益。
+
+## 固定预算的 Qlib 因子研究轨迹
+
+借鉴 QuantaAlpha 的假设、回测反馈、父子轨迹与窗口变异/秩交叉，新增 [`FACTOR_TRAJECTORIES.md`](FACTOR_TRAJECTORIES.md)：本地 8 次 Qlib 验证期评估，记录每一项对固定 Alpha158 基线的增量、表达式、父节点和反馈；没有再次运行新 LLM API，也没有使用 2022+ 测试期来选择新因子。历史验证数据已被查看，结果不可当作新样本外收益。
+
 ## Qlib + XGBoost 基线
 
 当前基线暂时只使用价格量技术特征，不接入基本面和新闻数据。训练脚本使用 Qlib 的 `DatasetH` 和 `XGBModel`，以 36 个特征预测 `target_1d`（下一交易日复权收益），其中显式加入 `one_day_reversal = -return_1d`。训练时默认使用 Qlib 的 `CSRankNorm` 对特征和标签分别做逐日横截面 RankNorm，评估时恢复使用原始收益；同时将一日反转因子作为简单基线。可通过 `--feature-transform none` 关闭特征归一化：

@@ -22,7 +22,7 @@
 
 **能成交，不等于因子合格或策略有效**：该结果低于参考值，Sharpe 甚至略负；对真实资金没有上线依据。2023 已在之前实验中查看过，2025 年后的股票当前名单也被用于历史面板，LLM 本身可能记忆历史结果，所以该收益**仅说明代码链路真实地产生了仓位和成本，不构成独立样本外验证**。
 
-产物：`factor_library_demo.json`（单项因子、真实生成时点、非论文准入与回溯诊断标识）、`admission_decisions.json`（所有候选决策）、`screener/{predictions.csv,selection.csv,regime.csv}`、`trades_daily.csv`、`positions.csv`、`summary.json`、`manifest.json`（输入/代码 SHA-256 和固定配置）、`status.json`。原始 Miner 的 `accepted_factors.json` 仍是空列表。早先的本地 `...execution_demo_v1/` 曾把事后生成的 LLM 因子写成 2022 年快照，**那是时间来源错误的旧诊断，不能使用**；v2 移除这种历史快照并标记回溯范围。使用新目录重跑：
+产物：`factor_library_demo.json`（单项因子、真实生成时点、非论文准入与回溯诊断标识）、`admission_decisions.json`（所有候选决策）、`screener/{predictions.csv,selection.csv,regime.csv}`、`trades_daily.csv`、`positions.csv`、`simulated_orders.csv`（新版：逐股票开仓/平仓的模拟名义金额与费用）、`summary.json`、`manifest.json`（输入/代码 SHA-256 和固定配置）、`status.json`。原始 Miner 的 `accepted_factors.json` 仍是空列表。早先的本地 `...execution_demo_v1/` 曾把事后生成的 LLM 因子写成 2022 年快照，**那是时间来源错误的旧诊断，不能使用**；v2 移除这种历史快照并标记回溯范围。使用新目录重跑：
 
 ```bash
 python3 quant-method/alphacrafter/run_agent_execution_demo.py \
@@ -31,5 +31,11 @@ python3 quant-method/alphacrafter/run_agent_execution_demo.py \
   --calendar quant-method/machine-learn/data/processed/sp500_xnys_xcal_4_13_3.csv \
   --output-dir quant-method/machine-learn/data/qlib/alphacrafter_agent_execution_demo_new
 ```
+
+## 本地模拟订单闭环（新增）
+
+已使用上述固定 LLM 候选和独立演示库在新目录 `machine-learn/data/qlib/alphacrafter_agent_execution_demo_local_orders_v1/` 重新运行，`status.json=completed_exploratory_demo`：演示库非空（`roc30_ts_slope_30`），Screener `selection.csv` 确实选中此因子，Trader 172 天建立 1,720 条模拟持仓，并生成 **3,440 条开/平仓名义金额记录**。每条执行日期是信号日的下一交易日；开仓额按当日净值 × 权重，平仓额按开仓额 × (1 + 当日日内收益)；逐日成交额、费用和净收益与 Trader 账本对账，不相等即失败。首条记录：2023-01-03 信号，2023-01-04 模拟买入 AIZ 名义额 10,000 美元、手续费 1 美元，收盘模拟卖出名义额约 10,080.43 美元、手续费约 1.008 美元。
+
+**这些不是券商订单或真实成交**：输入只有收益标签，没有可执行开盘/收盘价格、股数或盘口，故 CSV 不填写虚构成交价/股数；也没有证明历史因子在 2023 年当时可见。严格论文库仍为空，严格 Trader 仍应空仓。此闭环只解决“本地演示别因空库无交易”，不作为新样本外收益或上线依据。回归测试 `python3 -m unittest discover -q`：85 tests OK。
 
 下一步若目标是**正常可上线的 Agent 交易**，必须先定义最低可接受风险和真实新窗口，纳入完整数据时点、交易滑点/成交约束和券商 paper-trading 接口；不能把本演示的宽松因子库转存为严格库，或看完 2023 收益再修改规则宣称未用验证集。

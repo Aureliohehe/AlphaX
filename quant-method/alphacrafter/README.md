@@ -11,6 +11,10 @@ Miner Harness 不依赖 LLM 即可运行：
 
 `return_1d` 与 `one_day_reversal` 数学上完全等价，因此不进入候选池，只作为简单反转基线。
 
+## 固定预算批量候选研究
+
+`run_candidate_batch.py` 将已冻结的 12 个 LLM 提案与确定性技术候选按结构去重、受预算约束，逐项报告严格准入失败原因，并在**同一个历史准入窗口**做扣费模拟诊断；不会把事后生成的候选输出为历史可交易快照。已运行 32 候选研究实验，严格通过 0 个；命令和限制见 [`CANDIDATE_BATCH.md`](CANDIDATE_BATCH.md)。对其中 12 个冻结 LLM 因子的放宽准入敏感性实验见 [`LLM_GATE_SWEEP.md`](LLM_GATE_SWEEP.md)：仅 1 日弱正值准入能进 1 个，同时保留 1/5 日须把命中率降至 >49% 才进 1 个。进一步的 101 级连续放宽轨迹已让 12/12 全部进入**回溯研究名单**，但终点必须允许负 IC/ICIR 和仅约 43% 的方向命中，故不能当作有效准入规则。以上都不是新样本外收益，也不改变下述严格流程。阶梯各因子集合在已看过的 2023 历史窗口逐个运行 Screener 和本地 Trader 的扣费对比见 [`GATE_LADDER_COMPARISON.md`](GATE_LADDER_COMPARISON.md)；历史最高收益不能据此选择有效门槛。
+
 ## 自动滚动实验
 
 `run_pipeline.py` 已串起按日期维护 Miner、Screener 历史回放、独立 Trader 验证和冻结后的留出评估，详见 [`PIPELINE.md`](PIPELINE.md)。先检查计划：
