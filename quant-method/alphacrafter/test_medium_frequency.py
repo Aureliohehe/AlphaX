@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,46 @@ from temporal import is_feature_column
 
 
 class MediumFrequencyTests(unittest.TestCase):
+    def test_daily_target_fill_preserves_selection_budget_and_holding_locks(self):
+        calendar = pd.bdate_range("2022-01-03", periods=100)
+        quotes = pd.DataFrame([{"date": d, "ticker": t, "open": 100., "close": 100.}
+                               for d in calendar for t in ("A", "B", "SH000300")])
+        # Only the initial scheduled decision selects A; intermediate signals
+        # request B, which must never be selected by the daily fill mechanism.
+        signals = pd.DataFrame([{"date": d, "ticker": t, "prediction": float(t == ("A" if i % 20 == 0 else "B"))}
+                                for i, d in enumerate(calendar) for t in ("A", "B")])
+        config = replace(strategy_presets()[20], topk=1, fill_target_daily=True)
+        report, trades, _, audit = simulate_cn(signals, quotes, calendar, config, calendar[1], calendar[-1])
+        initial = trades[trades.date < calendar[21]]
+        self.assertEqual(set(initial.ticker), {"A"})
+        self.assertGreater(len(initial), 1)
+        self.assertLess(report.cash.iloc[5] / report.nav.iloc[5], .21)
+        self.assertTrue(audit["turnover_budget_respected"] and audit["cost_budget_respected"])
+        self.assertTrue(audit["liquidation_complete"])
+        last_buy = {}
+        for row in trades.itertuples():
+            if row.side == "buy":
+                last_buy[row.ticker] = calendar.get_loc(row.date)
+            else:
+                self.assertGreaterEqual(calendar.get_loc(row.date) - last_buy[row.ticker], 20)
+        changed = quotes.copy()
+        changed.loc[changed.date >= calendar[3], "close"] *= 1.5
+        _, other, _, _ = simulate_cn(signals, changed, calendar, config, calendar[1], calendar[-1])
+        pd.testing.assert_frame_equal(trades[trades.date <= calendar[3]].reset_index(drop=True),
+                                      other[other.date <= calendar[3]].reset_index(drop=True))
+
+    def test_exposure_matched_index_equals_identical_asset_including_costs(self):
+        calendar = pd.bdate_range("2022-01-03", periods=100)
+        quotes = pd.DataFrame([{"date": d, "ticker": t, "open": 100 * 1.001**i,
+                                "close": 100 * 1.001**i * (1.002 if i % 2 else .999)}
+                               for i, d in enumerate(calendar) for t in ("A", "SH000300")])
+        signals = pd.DataFrame({"date": calendar, "ticker": "A", "prediction": 1.})
+        for mode in (False, True):
+            config = replace(strategy_presets()[5], topk=1, fill_target_daily=mode)
+            report, _, _, audit = simulate_cn(signals, quotes, calendar, config, calendar[1], calendar[-1])
+            np.testing.assert_allclose(report.net_return, report.matched_index_net_return, atol=1e-12)
+            self.assertTrue(audit["liquidation_complete"])
+
     def test_execution_labels_follow_market_sessions_and_skip_signal_close(self):
         dates = pd.Series(pd.bdate_range("2020-01-01", periods=30))
         opens = pd.Series(np.arange(30.) + 100)

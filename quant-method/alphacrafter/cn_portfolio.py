@@ -20,8 +20,13 @@ class CNConfig:
     max_daily_turnover: float | None = None
     max_daily_cost: float | None = None
     rebalance_existing: bool = True
+    fill_target_daily: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.fill_target_daily, bool):
+            raise ValueError("fill_target_daily must be boolean")
+        if self.fill_target_daily and self.rebalance_existing:
+            raise ValueError("Daily target filling requires rebalance_existing=False")
         if isinstance(self.topk, bool) or not isinstance(self.topk, int) or self.topk < 1:
             raise ValueError("topk must be a positive integer")
         if not all(np.isfinite(v) for v in (self.exposure, self.commission, self.slippage, self.opening_gap_guard)):
@@ -78,6 +83,7 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
             return float(value) if np.isfinite(value) and value > 0 else np.nan
 
         opening = {ticker: price(current, ticker, "open") for ticker in units}
+        previous_equity = sum(n * marks[t] for t, n in units.items())
         nav_open = cash + sum(n * (opening[t] if np.isfinite(opening[t]) else marks[t]) for t, n in units.items())
         signal = sdates.get(source_day, pd.Series(dtype=float))
         ranking = signal[np.isfinite(signal)].rename("prediction").reset_index()
@@ -116,6 +122,19 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
                 targets[ticker] = quantity * (op if np.isfinite(op) else marks[ticker])
         if not decision_day:
             targets = {t: targets[t] for t in units}
+        # Optional experiment: freeze share targets on scheduled decisions, then
+        # fill only their outstanding buys on subsequent opens. Never select new
+        # names, sell, or refresh a target from an intervening signal/close.
+        if config.fill_target_daily and not no_new_buys:
+            if decision_day:
+                for ticker in chosen:
+                    op = price(current, ticker, "open")
+                    if np.isfinite(op):
+                        desired_units[ticker] = nav_open * config.exposure / config.topk / op
+            for ticker, quantity in desired_units.items():
+                op = price(current, ticker, "open")
+                if np.isfinite(op):
+                    targets[ticker] = max(targets.get(ticker, 0.), quantity * op)
         cost = traded = 0.
         blocked_buy = blocked_sell = 0
 
@@ -174,7 +193,7 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
                 trade(ticker, quantity, "sell")
         requests = {}
         for ticker, target in targets.items():
-            if not decision_day or no_new_buys:
+            if (not decision_day and not config.fill_target_daily) or no_new_buys:
                 continue
             if not tradable(ticker, "buy"):
                 blocked_buy += 1
@@ -197,6 +216,8 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
         if cash < -1e-10:
             raise ValueError("Negative cash")
         cash = max(0., cash)
+        equity_after_open = sum(n * (price(current, t, "open") if np.isfinite(price(current, t, "open")) else marks[t])
+                                for t, n in units.items())
         stale = 0
         for ticker, quantity in units.items():
             close = price(current, ticker, "close")
@@ -224,13 +245,25 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
             raise ValueError("Missing CSI300 benchmark price")
         benchmark_nav *= 1 + br
         net = nav / previous_nav - 1
+        # Attribution benchmark: same overnight and intraday risky weights,
+        # same daily fee drag as the realized strategy, but index price moves.
+        # This is a path-conditioned diagnostic, not an independently tradable
+        # index allocation or an estimate of risk-adjusted alpha.
+        if not np.isfinite(index_op) or index_op <= 0 or not np.isfinite(prev_index) or prev_index <= 0:
+            raise ValueError("Missing index open/prior close for exposure attribution")
+        matched_gross = (previous_equity / previous_nav * (index_op / prev_index - 1)
+                         + equity_after_open / previous_nav * (index_cl / index_op - 1))
         daily.append({"date": day, "net_return": net, "gross_return": net + cost / previous_nav,
                       "benchmark_return": br, "turnover": traded / previous_nav / 2,
                       "transaction_cost": cost / previous_nav, "nav": nav, "cash": cash,
                       "held_assets": len(units), "stale_assets": stale, "blocked_buys": blocked_buy,
                       "blocked_sells": blocked_sell, "benchmark_nav": benchmark_nav,
                       "scheduled_rebalance": day_index % config.rebalance_interval == 0,
-                      "terminal_winddown": winddown})
+                      "terminal_winddown": winddown,
+                      "previous_close_equity_weight": previous_equity / previous_nav,
+                      "post_open_equity_per_previous_nav": equity_after_open / previous_nav,
+                      "matched_index_gross_return": matched_gross,
+                      "matched_index_net_return": matched_gross - cost / previous_nav})
         previous_nav = nav
     report = pd.DataFrame(daily).set_index("date")
     audit = {"liquidation_complete": not units, "ending_positions": len(units),
