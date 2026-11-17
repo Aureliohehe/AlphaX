@@ -15,8 +15,7 @@ def rolling_feedback(frame, candidate, available, targets, label_ends, folds=3):
     if folds < 2 or len(sessions) < (folds + 1) * 5:
         raise ValueError("Search needs >=2 folds and >=5 sessions per block")
     blocks = np.array_split(sessions, folds + 1)
-    ranked = frame[available].groupby(dates, sort=False).rank(pct=True)
-    score = evaluate_candidate_score(candidate, ranked, frame, dates)
+    score = evaluate_candidate_score(candidate, frame, dates)
     records = []
     directions = []
     for index, block in enumerate(blocks[1:], 1):

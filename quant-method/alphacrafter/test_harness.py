@@ -23,6 +23,7 @@ from miner_lite import (
     needs_revalidation,
     parse_llm_candidates,
 )
+from screener_lite import cross_section_rank, ensemble_signal
 from run_agent_execution_demo import demo_gate
 from run_miner_walk_forward import (
     build_signal,
@@ -52,6 +53,7 @@ class MinerHarnessTests(unittest.TestCase):
             }
         )
         self.ranked = pd.DataFrame({"feature_x": [0.1, 0.5, 0.9, 0.2, 0.4, 0.8]})
+        self.frame["feature_x"] = self.ranked["feature_x"]
         self.target = pd.Series([0.01, 0.02, 0.03, 0.01, 0.02, 0.03])
         self.candidates = [
             Candidate("single__feature_x", "feature", ("feature_x",), "test")
@@ -61,7 +63,7 @@ class MinerHarnessTests(unittest.TestCase):
         selected = select_factors(
             self.dates,
             self.target,
-            self.ranked,
+            self.frame,
             self.candidates,
             "2020-12-31",
             0.0,
@@ -71,7 +73,7 @@ class MinerHarnessTests(unittest.TestCase):
         changed = select_factors(
             self.dates,
             changed_target,
-            self.ranked,
+            self.frame,
             self.candidates,
             "2020-12-31",
             0.0,
@@ -88,7 +90,7 @@ class MinerHarnessTests(unittest.TestCase):
                 "direction": 1,
             }
         ]
-        signal = build_signal(self.frame, self.ranked, selected, "2020-12-31")
+        signal = build_signal(self.frame, self.frame, selected, "2020-12-31")
         self.assertEqual(signal["datetime"].max(), pd.Timestamp("2020-01-02"))
 
     def test_validation_cost_reduces_net_return(self) -> None:
@@ -148,7 +150,7 @@ class MinerHarnessTests(unittest.TestCase):
                 "expression": {"op": "ts_delta", "feature": "feature_x", "window": 2},
             }
         )
-        score = evaluate_candidate_score(candidate, ranked, frame, frame["date"])
+        score = evaluate_candidate_score(candidate, frame)
         self.assertTrue(pd.isna(score.iloc[0]))
         self.assertEqual(float(score.iloc[2]), 2.0)
 
@@ -246,14 +248,52 @@ class MinerHarnessTests(unittest.TestCase):
         })
         target = pd.Series([.01, .02, .04, .06, .01, .05, .03, .07])
         ranked = frame[["signal"]].groupby(frame["date"]).rank(pct=True)
-        legacy = Candidate("ranked", "feature", ("signal",), "")
+        legacy = Candidate("ranked", "expression", ("signal",), "",
+                           {"op": "rank", "input": {"op": "feature", "feature": "signal"}})
         raw = Candidate("raw", "expression", ("signal",), "", {"op": "feature", "feature": "signal"})
-        rank_metric = evaluate_score(frame["date"], evaluate_candidate_score(legacy, ranked, frame, frame["date"]),
+        rank_metric = evaluate_score(frame["date"], evaluate_candidate_score(legacy, frame),
                                      target, pd.Series(True, index=frame.index), frame["ticker"])
-        raw_metric = evaluate_score(frame["date"], evaluate_candidate_score(raw, ranked, frame, frame["date"]),
+        raw_metric = evaluate_score(frame["date"], evaluate_candidate_score(raw, frame),
                                     target, pd.Series(True, index=frame.index), frame["ticker"])
         self.assertNotAlmostEqual(raw_metric.mean_daily_ic, rank_metric.mean_daily_ic)
         self.assertAlmostEqual(raw_metric.mean_daily_rank_ic, rank_metric.mean_daily_rank_ic)
+
+    def test_legacy_and_ast_share_scores_metrics_and_rendering(self) -> None:
+        frame = pd.DataFrame({
+            "date": pd.to_datetime(["2020-01-02"] * 4 + ["2020-01-03"] * 4),
+            "ticker": ["A", "B", "C", "D"] * 2,
+            "x": [1., 2., 30., 4., 1., 4., 60., 8.],
+            "y": [10., 3., 2., 1., 9., 4., 1., 3.],
+        })
+        target = pd.Series([.01, .02, .04, .06, .01, .05, .03, .07])
+        for op in ("feature", "sum", "difference"):
+            with self.subTest(op=op):
+                fields = ["x"] if op == "feature" else ["x", "y"]
+                legacy = candidate_from_dict({"candidate_id": "legacy", "op": op, "features": fields})
+                spec = ({"op": "feature", "feature": "x"} if op == "feature" else
+                        {"op": op, "inputs": [{"op": "feature", "feature": f} for f in fields]})
+                ast = candidate_from_dict({"candidate_id": "ast", "expression": spec})
+                left, right = (evaluate_candidate_score(c, frame) for c in (legacy, ast))
+                expected = frame.x if op == "feature" else frame.x + frame.y if op == "sum" else frame.x - frame.y
+                pd.testing.assert_series_equal(left, expected)
+                pd.testing.assert_series_equal(left, right)
+                self.assertEqual(legacy.expression, ast.expression)
+                metrics = [evaluate_score(frame.date, score, target, pd.Series(True, index=frame.index), frame.ticker)
+                           for score in (left, right)]
+                self.assertEqual(metrics[0], metrics[1])
+
+    def test_composite_ranks_after_expression_and_preserves_missing_components(self) -> None:
+        frame = pd.DataFrame({"date": pd.to_datetime(["2020-01-02"] * 3),
+                              "ticker": ["A", "B", "C"], "x": [1., 2., 100.], "y": [3., 1., float("nan")]})
+        factors = [{"candidate_id": f, "op": "feature", "features": [f], "direction": 1} for f in ("x", "y")]
+        signal = build_accepted_signal(frame, factors)
+        expected = (frame[["x", "y"]].rank(pct=True) - .5).sum(axis=1, min_count=2) / 2
+        pd.testing.assert_series_equal(signal.prediction, expected, check_names=False)
+        screened = ensemble_signal(
+            {f: cross_section_rank(frame[f], frame.date) for f in ("x", "y")},
+            [{"candidate_id": f, "direction": 1, "weight": .5} for f in ("x", "y")], frame.index,
+        )
+        pd.testing.assert_series_equal(signal.prediction, screened, check_names=False)
 
     def test_accepted_ast_factor_is_rehydrated_for_signal_building(self) -> None:
         frame = pd.DataFrame(
@@ -279,7 +319,7 @@ class MinerHarnessTests(unittest.TestCase):
                 "direction": 1,
             }
         ]
-        signal = build_accepted_signal(frame, ranked, accepted)
+        signal = build_accepted_signal(frame, accepted)
         self.assertEqual(len(signal), len(frame))
         self.assertTrue(signal["prediction"].notna().any())
 

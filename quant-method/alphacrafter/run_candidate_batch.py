@@ -129,11 +129,10 @@ def diagnostic_trades(input_path: Path, calendar_path: Path, candidate_rows: lis
     next_date = dict(zip(calendar[:-1], calendar[1:]))
     panel["execution_date"] = panel["date"].map(next_date)
     panel.loc[panel["label_end_1d"] != panel["execution_date"], "target_open_close"] = np.nan
-    ranked = panel[features].groupby(panel["date"], sort=False).rank(pct=True).astype("float32")
     result = {}
     for row in metrics:
         candidate = candidates[row["candidate_id"]]
-        score = evaluate_candidate_score(candidate, ranked, panel, panel["date"])
+        score = evaluate_candidate_score(candidate, panel)
         dates = panel["date"].between(start, end)
         signal = panel.loc[dates, ["date", "ticker", "target_open_close", "execution_date"]].copy()
         signal["prediction"] = row["direction_from_train"] * score[dates].to_numpy()

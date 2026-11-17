@@ -41,6 +41,7 @@ from miner_lite import (
     _deepseek_tool_call,
     candidate_from_factor,
     evaluate_candidate_score,
+    cross_section_rank,
 )
 
 
@@ -61,10 +62,6 @@ def load_factor_library(path: Path) -> List[Dict[str, object]]:
             continue
         active.append(factor)
     return active
-
-
-def cross_section_rank(values: pd.Series, dates: pd.Series) -> pd.Series:
-    return values.groupby(dates, sort=False).rank(pct=True) - 0.5
 
 
 def rank_correlation(left: pd.Series, right: pd.Series) -> float:
@@ -457,7 +454,6 @@ def main() -> None:
     unknown_end = label_ends.isna().groupby(frame["date"]).any()
     label_available_dates = label_available_dates.mask(unknown_end)
     available = [column for column in frame.columns if is_feature_column(column) and column not in BASELINE_FEATURES]
-    ranked = frame[available].groupby(frame["date"], sort=False).rank(pct=True).astype("float32")
     dates = sorted(frame["date"].drop_duplicates())
     signal_start = session_date(args.signal_start) if args.signal_start else dates[0]
     signal_dates = [date for date in dates if date >= signal_start]
@@ -525,7 +521,7 @@ def main() -> None:
     rank_scores: Dict[str, pd.Series] = {}
     daily_ics: Dict[str, pd.Series] = {}
     for candidate_id, candidate in candidates.items():
-        score = evaluate_candidate_score(candidate, ranked, frame, frame["date"])
+        score = evaluate_candidate_score(candidate, frame)
         scores[candidate_id] = score
         rank_scores[candidate_id] = cross_section_rank(score, frame["date"])
         daily_ics[candidate_id] = daily_rank_ic(frame["date"], score, frame[execution_target])

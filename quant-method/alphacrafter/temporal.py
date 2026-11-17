@@ -21,7 +21,7 @@ from data_contract import (  # noqa: E402
     label_end_source, read_calendar, resolve_label_ends,
 )
 
-TEMPORAL_POLICY_VERSION = "label-end-v1"
+TEMPORAL_POLICY_VERSION = "label-end-v2-raw-expression"
 
 
 def session_date(value: object) -> pd.Timestamp:

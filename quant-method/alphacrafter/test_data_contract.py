@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 # temporal installs the sibling standalone-script directory on sys.path.
-from temporal import META_COLUMNS, label_end_dates, purged_mask, visible_panel
+from temporal import TEMPORAL_POLICY_VERSION, META_COLUMNS, label_end_dates, purged_mask, visible_panel
 from data_contract import (
     calendar_audit, forward_labels, is_feature_column, read_calendar,
     resolve_label_ends,
@@ -361,7 +361,7 @@ class DataContractIntegrationTests(unittest.TestCase):
             root = Path(tmp)
             explicit_panel().to_csv(root / "features.csv", index=False)
             (root / "registry.json").write_text(json.dumps({
-                "temporal_policy_version": "label-end-v1", "as_of": "2021-11-01", "accepted_factors": [],
+                "temporal_policy_version": TEMPORAL_POLICY_VERSION, "as_of": "2021-11-01", "accepted_factors": [],
             }))
             result = run_cli("miner_lite.py", "--input", root / "features.csv", "--registry", root / "registry.json",
                              "--output-dir", root / "out", "--as-of", "2022-01-14", "--require-explicit-label-dates", check=False)

@@ -126,15 +126,7 @@ class Candidate:
 
     @property
     def expression(self) -> str:
-        if self.expression_spec is not None:
-            return render_expression(self.expression_spec)
-        if self.op == "feature":
-            return f"rank({self.features[0]})"
-        if self.op == "difference":
-            return f"rank({self.features[0]}) - rank({self.features[1]})"
-        if self.op == "sum":
-            return f"rank({self.features[0]}) + rank({self.features[1]})"
-        raise ValueError(f"Unsupported operation: {self.op}")
+        return render_expression(_candidate_expression_spec(self))
 
 
 def expression_features(node: Dict[str, object]) -> Tuple[str, ...]:
@@ -242,7 +234,7 @@ def validate_expression(
 
 
 def _candidate_expression_spec(candidate: Candidate) -> Dict[str, object]:
-    """Represent legacy candidates as ASTs for novelty analysis."""
+    """Canonical AST for evaluation, rendering, persistence and novelty analysis."""
     if candidate.expression_spec is not None:
         return candidate.expression_spec
     if candidate.op == "feature":
@@ -655,6 +647,9 @@ A candidate must be a JSON object with:
     use `inputs` with exactly two expression objects; ts_corr uses `features`
     with exactly two feature names; time-series unary ops use `feature` and `window`.
   Time-series windows must be integers from 2 through 252.
+Feature leaves read raw values. Arithmetic uses raw inputs; rank is never implicit.
+Use an explicit rank node for cross-sectional percentile ranking. ts_rank ranks within each stock.
+The validator calculates Pearson IC on the expression output and Rank IC by ranking that output.
 The validator will calculate all metrics. Return only a JSON array.
 Approved features: {json.dumps(list(available), ensure_ascii=False)}
 Do not emit Python, arbitrary function names, or operators outside this grammar.
@@ -1196,33 +1191,28 @@ def _evaluate_expression(
 
 def evaluate_candidate_score(
     candidate: Candidate,
-    ranked: pd.DataFrame,
-    frame: Optional[pd.DataFrame] = None,
+    frame: pd.DataFrame,
     dates: Optional[pd.Series] = None,
 ) -> pd.Series:
-    validate_candidate(candidate, ranked.columns)
-    if candidate.expression_spec is not None:
-        if frame is None or dates is None:
-            raise ValueError("AST factors require the raw frame and dates for evaluation")
-        validate_candidate(candidate, frame.columns)
-        return _evaluate_expression(candidate.expression_spec, frame, dates)
-    if candidate.op == "feature":
-        return ranked[candidate.features[0]]
-    left = ranked[candidate.features[0]]
-    right = ranked[candidate.features[1]]
-    if candidate.op == "difference":
-        return left - right
-    if candidate.op == "sum":
-        return left + right
-    raise ValueError(f"Unsupported operation: {candidate.op}")
+    """Evaluate the declared expression on raw fields; rank only when explicit."""
+    validate_candidate(candidate, frame.columns)
+    return _evaluate_expression(
+        _candidate_expression_spec(candidate), frame,
+        frame["date"] if dates is None else dates,
+    )
 
 
 def metric_dict(metric: Metric) -> Dict[str, float]:
     return asdict(metric)
 
 
+def cross_section_rank(values: pd.Series, dates: pd.Series) -> pd.Series:
+    """Normalize completed factor outputs for portfolio combination only."""
+    return values.groupby(dates, sort=False).rank(pct=True) - 0.5
+
+
 def build_accepted_signal(
-    frame: pd.DataFrame, ranked: pd.DataFrame, accepted: Sequence[Dict[str, object]]
+    frame: pd.DataFrame, accepted: Sequence[Dict[str, object]]
 ) -> pd.DataFrame:
     """Build an equal-weight composite from validation-approved factors."""
     if not accepted:
@@ -1237,9 +1227,9 @@ def build_accepted_signal(
         candidate = candidate_from_factor(factor)
         direction = int(factor["direction"])
         scores.append(
-            direction * evaluate_candidate_score(candidate, ranked, frame, frame["date"])
+            direction * cross_section_rank(evaluate_candidate_score(candidate, frame), frame["date"])
         )
-    composite = pd.concat(scores, axis=1).mean(axis=1).rename("prediction")
+    composite = (pd.concat(scores, axis=1).sum(axis=1, min_count=len(scores)) / len(scores)).rename("prediction")
     signal = pd.DataFrame(
         {
             "datetime": frame["date"].to_numpy(),
@@ -1570,13 +1560,12 @@ def main() -> None:
         for factor in previous_factors
         if isinstance(factor, dict) and factor.get("candidate_id")
     }
-    # Cross-sectional rank normalization is computed once for all source fields.
-    ranked = frame[available].groupby(dates, sort=False).rank(pct=True).astype("float32")
-    baseline = frame["one_day_reversal"].groupby(dates, sort=False).rank(pct=True)
+    # Metrics use raw expression outputs, including the reversal baseline.
+    baseline = frame["one_day_reversal"]
     results: List[Dict[str, object]] = []
     accepted: List[Dict[str, object]] = []
     for candidate in candidates:
-        score = evaluate_candidate_score(candidate, ranked, frame, dates)
+        score = evaluate_candidate_score(candidate, frame, dates)
         horizon_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
         for horizon in EVALUATION_HORIZONS:
             horizon_target = targets[horizon]
@@ -1782,7 +1771,7 @@ def main() -> None:
     # Archive before replacing mutable convenience outputs. A conflicting run
     # at the same cutoff must not silently rewrite historical admission state.
     snapshot_path = write_snapshot(args.snapshot_dir or args.output_dir / "snapshots", library_payload)
-    signal = build_accepted_signal(frame, ranked, accepted)
+    signal = build_accepted_signal(frame, accepted)
     signal.to_csv(args.output_dir / "diagnostic_predictions.csv", index=False)
     signal.loc[signal["datetime"] >= as_of].to_csv(args.output_dir / "predictions.csv", index=False)
     (args.output_dir / "temporal_audit.json").write_text(json.dumps(temporal_audit, indent=2) + "\n")
@@ -1790,11 +1779,8 @@ def main() -> None:
     for candidate in candidates:
         payload = asdict(candidate)
         payload["features"] = list(candidate.features)
-        if candidate.expression_spec is not None:
-            payload["expression"] = candidate.expression_spec
-            payload["expression_text"] = candidate.expression
-        else:
-            payload["expression"] = candidate.expression
+        payload["expression"] = _candidate_expression_spec(candidate)
+        payload["expression_text"] = candidate.expression
         candidate_payload.append(payload)
     (args.output_dir / "candidates.json").write_text(
         json.dumps(candidate_payload, indent=2, ensure_ascii=False) + "\n"
@@ -1859,7 +1845,7 @@ def main() -> None:
                 "factor_library_file": factor_library_path.name,
                 "signal": {
                     "file": "predictions.csv",
-                    "construction": "equal-weight mean of direction-adjusted accepted factor scores",
+                    "construction": "equal-weight mean of direction-adjusted centered percentile ranks of accepted factor outputs",
                     "execution": "T close signal, T+1 open trade",
                     "available_from": str(as_of.date()),
                     "retrospective_diagnostic_file": "diagnostic_predictions.csv",

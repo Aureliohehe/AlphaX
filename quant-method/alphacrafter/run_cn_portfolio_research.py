@@ -75,10 +75,9 @@ def composite_signals(features, pool, calendar, start, end):
     frame = pd.concat(pieces, ignore_index=True).sort_values(["date", "ticker"]).reset_index(drop=True)
     if frame.duplicated(["date", "ticker"]).any():
         raise ValueError("Duplicate feature keys")
-    ranked = frame[fields].groupby(frame.date, sort=False).rank(pct=True)
     scores = []
     for candidate, direction in candidates:
-        values = direction * evaluate_candidate_score(candidate, ranked, frame, frame.date)
+        values = direction * evaluate_candidate_score(candidate, frame)
         scores.append(values.replace([np.inf, -np.inf], np.nan).groupby(frame.date, sort=False).rank(pct=True))
     score = pd.concat(scores, axis=1).sum(axis=1, min_count=len(scores)) / len(scores)
     frame["prediction"] = score

@@ -60,6 +60,14 @@ def run_cli(script, *args, check=True):
 
 
 class TemporalUnitTests(unittest.TestCase):
+    def test_old_scoring_policy_cannot_be_reused_or_replayed(self):
+        old = fixture_snapshot("2022-12-30")
+        old["temporal_policy_version"] = "label-end-v1"
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            snapshot_date(old)
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            validate_previous_registry(old, "2023-01-03")
+
     def test_per_asset_label_ends_follow_irregular_sorted_sessions(self):
         frame = pd.DataFrame({
             "date": pd.to_datetime(["2024-01-05", "2024-01-02", "2024-01-03", "2024-01-02"]),

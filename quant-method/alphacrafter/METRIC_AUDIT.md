@@ -1,5 +1,7 @@
 # Miner 指标口径审计（论文 Algorithm 1 / Appendix B.2）
 
+> 版本说明：本文保留旧实现及其历史实验记录。当前普通候选与 AST 已统一按原始值求值，详见 [EXPRESSION_SEMANTICS.md](EXPRESSION_SEMANTICS.md)；下列历史数字未重新计算。
+
 审计对象：仓库 PDF `AlphaCrafter` 的 Algorithm 1（1/5 日前瞻与门槛）及 Appendix B.2 的公式 (9)–(18)；代码 `miner_lite.py:evaluate_score`、`data_contract.py:forward_labels`。以下是**指标口径诊断**，不是新收益或未使用过的样本外检验。
 
 | 项目 | 论文定义 | 当前实现及结论 |

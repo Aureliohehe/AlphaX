@@ -21,7 +21,10 @@ from miner_lite import (
     META_COLUMNS,
     is_feature_column,
     Candidate,
+    candidate_from_factor,
+    cross_section_rank,
     evaluate_candidate_score,
+    evaluate_score,
     template_candidates,
 )
 
@@ -29,33 +32,22 @@ from miner_lite import (
 def train_rank_ic(
     dates: pd.Series, target: pd.Series, score: pd.Series, train_end: str
 ) -> tuple[float, float]:
-    """Calculate mean daily Rank IC without the per-group Python loop."""
-    mask = dates <= pd.Timestamp(train_end)
-    train_dates = dates.loc[mask]
-    score_rank = score.loc[mask].groupby(train_dates, sort=False).rank()
-    target_rank = target.loc[mask].groupby(train_dates, sort=False).rank()
-    score_centered = score_rank - score_rank.groupby(train_dates, sort=False).transform("mean")
-    target_centered = target_rank - target_rank.groupby(train_dates, sort=False).transform("mean")
-    covariance = (score_centered * target_centered).groupby(train_dates, sort=False).sum()
-    score_norm = (score_centered * score_centered).groupby(train_dates, sort=False).sum()
-    target_norm = (target_centered * target_centered).groupby(train_dates, sort=False).sum()
-    daily_ic = (covariance / (score_norm * target_norm).pow(0.5)).replace([float("inf"), -float("inf")], pd.NA).dropna()
-    mean_ic = float(daily_ic.mean()) if not daily_ic.empty else float("nan")
-    icir = float(mean_ic / daily_ic.std()) if len(daily_ic) > 1 and daily_ic.std() else float("nan")
-    return mean_ic, icir
+    """Use the shared Miner metric definitions for rolling selection."""
+    metric = evaluate_score(dates, score, target, dates <= pd.Timestamp(train_end))
+    return metric.mean_daily_rank_ic, metric.rank_icir
 
 
 def select_factors(
     dates: pd.Series,
     target: pd.Series,
-    ranked: pd.DataFrame,
+    features: pd.DataFrame,
     candidates: List[Candidate],
     train_end: str,
     min_abs_train_ic: float,
 ) -> List[Dict[str, object]]:
     selected = []
     for candidate in candidates:
-        score = evaluate_candidate_score(candidate, ranked)
+        score = evaluate_candidate_score(candidate, features)
         mean_ic, icir = train_rank_ic(dates, target, score, train_end)
         if pd.isna(mean_ic) or abs(mean_ic) < min_abs_train_ic:
             continue
@@ -66,6 +58,7 @@ def select_factors(
                 "op": candidate.op,
                 "features": list(candidate.features),
                 "expression": candidate.expression,
+                "expression_spec": candidate.expression_spec,
                 "direction": direction,
                 "train_end": train_end,
                 "train_rank_ic": mean_ic,
@@ -77,19 +70,15 @@ def select_factors(
     return selected
 
 
-def composite_score(ranked: pd.DataFrame, selected: Sequence[Dict[str, object]]) -> pd.Series:
+def composite_score(features: pd.DataFrame, selected: Sequence[Dict[str, object]]) -> pd.Series:
     if not selected:
         raise ValueError("Cannot build a composite without selected factors")
     scores = []
     for factor in selected:
-        candidate = Candidate(
-            candidate_id=str(factor["candidate_id"]),
-            op=str(factor["op"]),
-            features=tuple(factor["features"]),
-            hypothesis="",
-        )
-        scores.append(int(factor["direction"]) * evaluate_candidate_score(candidate, ranked))
-    return pd.concat(scores, axis=1).mean(axis=1)
+        candidate = candidate_from_factor(factor)
+        raw = evaluate_candidate_score(candidate, features)
+        scores.append(int(factor["direction"]) * cross_section_rank(raw, features["date"]))
+    return pd.concat(scores, axis=1).sum(axis=1, min_count=len(scores)) / len(scores)
 
 
 def validation_portfolio_metrics(
@@ -144,7 +133,7 @@ def choose_factor_count(
     dates: pd.Series,
     instruments: pd.Series,
     target: pd.Series,
-    ranked: pd.DataFrame,
+    features: pd.DataFrame,
     selected: List[Dict[str, object]],
     start: str,
     end: str,
@@ -161,7 +150,7 @@ def choose_factor_count(
             dates,
             instruments,
             target,
-            composite_score(ranked, selected[:count]),
+            composite_score(features, selected[:count]),
             start,
             end,
             topk,
@@ -177,13 +166,13 @@ def choose_factor_count(
 
 def build_signal(
     frame: pd.DataFrame,
-    ranked: pd.DataFrame,
+    features: pd.DataFrame,
     selected: List[Dict[str, object]],
     end: str,
 ) -> pd.DataFrame:
     if not selected:
         raise ValueError("No factors passed the train-only admission gate")
-    composite = composite_score(ranked, selected)
+    composite = composite_score(features, selected)
     signal = pd.DataFrame(
         {
             "datetime": frame["date"].to_numpy(),
@@ -220,7 +209,7 @@ def main() -> None:
     target = frame["target_open_close"]
     factor_counts = [int(value) for value in args.factor_counts.split(",") if value.strip()]
     factor_counts = [value for value in factor_counts if value <= args.max_factors]
-    ranked = frame[available].groupby(dates, sort=False).rank(pct=True).astype("float32")
+    features = frame[["date", "ticker", *available]]
     candidates = template_candidates(available, args.max_pairs)
 
     windows = {
@@ -237,7 +226,7 @@ def main() -> None:
         ranked_factors = select_factors(
             dates,
             target,
-            ranked,
+            features,
             candidates,
             window["train_end"],
             args.min_abs_train_ic,
@@ -246,7 +235,7 @@ def main() -> None:
             dates,
             frame["ticker"],
             target,
-            ranked,
+            features,
             ranked_factors,
             window["valid_start"],
             window["valid_end"],
@@ -255,7 +244,7 @@ def main() -> None:
             args.n_drop,
             args.validation_cost_rate,
         )
-        signal = build_signal(frame, ranked, selected, window["end"])
+        signal = build_signal(frame, features, selected, window["end"])
         output_dir = args.output_dir / name
         output_dir.mkdir(parents=True, exist_ok=True)
         signal.to_csv(output_dir / "predictions.csv", index=False)
