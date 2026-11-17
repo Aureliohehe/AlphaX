@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--candidates", type=Path, required=True)
     parser.add_argument("--temporal-audit", type=Path, required=True)
     parser.add_argument("--market", choices=("cn", "us"), required=True)
+    parser.add_argument("--horizons", default="1,5", help="Comma-separated research horizons; e.g. 5,20 for the separate medium-frequency route")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--strategy-validation-start", default="2022-01-01")
     parser.add_argument("--strategy-validation-end", default="2023-12-31")
@@ -24,7 +25,11 @@ def main():
     inputs = [args.metrics, args.candidates, args.temporal_audit, Path(__file__), Path(__file__).with_name("admission.py")]
     fingerprints = {str(p.resolve()): file_fingerprint(p) for p in inputs}
     results, definitions, audit = [json.loads(p.read_text()) for p in inputs[:3]]
-    pool, assessments = build_research_pool(results, definitions, audit, args.market)
+    try:
+        horizons = tuple(int(value) for value in args.horizons.split(","))
+    except ValueError:
+        parser.error("--horizons must contain integer session counts")
+    pool, assessments = build_research_pool(results, definitions, audit, args.market, horizons=horizons)
     plan = strategy_plan(pool, args.strategy_validation_start, args.strategy_validation_end,
                          args.holdout_start, args.holdout_end)
     for path, expected in fingerprints.items():

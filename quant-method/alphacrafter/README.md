@@ -1,5 +1,7 @@
 # AlphaCrafter 复现工程
 
+新增 [中低频因子与策略 Harness](MEDIUM_FREQUENCY.md)：5/20 日开盘到开盘标签、12 个中长期候选、同周期成熟标签筛选，以及调仓间隔、最短持仓、排名缓冲、每日换手和费用预算。首轮真实研究池均无通过者，未强行生成策略收益，2024–2025 留出未评估。
+
 已新增 [两层准入](TWO_LAYER_ADMISSION.md)：按周期筛选研究候选，再对冻结的组合做独立策略验证。CSI300 当前进入 1 日研究池 13 个、5 日 0 个；[跨日组合收益测试](CSI300_PORTFOLIO_EXPERIMENT.md)的三个配置在 2022–2023 验证期扣费亏损，均未通过，未评估 2024–2025 留出收益。原严格论文对照结果保持不变。
 
 **当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。固定三因子的准入失败明细见 [`GATE_DIAGNOSIS.md`](GATE_DIAGNOSIS.md)，后续固定十二个技术候选的探索性结果见 [`CANDIDATE_EXPLORATION.md`](CANDIDATE_EXPLORATION.md)，论文指标/标签口径对照见 [`METRIC_AUDIT.md`](METRIC_AUDIT.md)，raw 与 RankNorm 的配对量化见 [`RANKNORM_AUDIT.md`](RANKNORM_AUDIT.md)，Qlib Alpha158 候选与 GitHub 调研见 [`ALPHA158_PRESET_REVIEW.md`](ALPHA158_PRESET_REVIEW.md)，严格单因子与固定 XGBoost 模型两条探索路线见 [`TWO_TRACK_EXPERIMENT.md`](TWO_TRACK_EXPERIMENT.md)，数据时点/独立日历障碍见 [`DATA_PROVENANCE_AUDIT.md`](DATA_PROVENANCE_AUDIT.md)；严格实验仍未产生可行策略；另有明确降低准入门槛、已跑出模拟持仓但**不能当作论文或实盘收益**的 LLM Agent 执行演示，见 [`AGENT_EXECUTION_DEMO.md`](AGENT_EXECUTION_DEMO.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。

@@ -19,7 +19,7 @@ META_COLUMNS = {"date", "ticker", "split", *LABEL_END_COLUMNS.values(),
 
 
 def is_feature_column(name: str) -> bool:
-    return name not in META_COLUMNS and not name.startswith(("label_end_", "target_"))
+    return name not in META_COLUMNS and not name.startswith(("label_end_", "label_start_", "target_"))
 
 
 def parse_session_series(values: pd.Series, name: str, allow_missing: bool = False) -> pd.Series:

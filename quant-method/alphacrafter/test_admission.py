@@ -108,6 +108,14 @@ class AdmissionTests(unittest.TestCase):
             self.assertFalse((out/"factor_library.json").exists())
             self.assertFalse((out/"predictions.csv").exists())
             self.assertFalse(json.loads((out/"manifest.json").read_text())["formal_validation_run"])
+            medium = [{"candidate_id": "weak", "horizons": {h: self.results[0]["horizons"]["5"] for h in ("5", "20")}}]
+            (root/"metrics.json").write_text(json.dumps(medium))
+            (root/"audit.json").write_text(json.dumps({**self.audit, "label_mode": "execution_open_open"}))
+            subprocess.run([sys.executable, str(Path(__file__).with_name("run_research_pool.py")),
+                            "--metrics", str(root/"metrics.json"), "--candidates", str(root/"candidates.json"),
+                            "--temporal-audit", str(root/"audit.json"), "--market", "cn", "--horizons", "5,20",
+                            "--output-dir", str(root/"medium")], check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads((root/"medium/research_pool.json").read_text())["eligible_counts"], {"5": 1, "20": 1})
 
     def test_trader_can_validate_weak_research_factors_on_independent_portfolio_returns(self):
         with tempfile.TemporaryDirectory() as temp:

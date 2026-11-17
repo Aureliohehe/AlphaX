@@ -41,9 +41,11 @@ def research_failures(metric, direction, policy):
     return [name for name, passed in checks.items() if not passed]
 
 
-def build_research_pool(results, definitions, audit, market="unknown", policy=None):
+def build_research_pool(results, definitions, audit, market="unknown", policy=None, horizons=(1, 5)):
     """Read train/development only; direction is fit separately per horizon."""
     policy = policy or ResearchPolicy()
+    if not horizons or len(set(horizons)) != len(horizons) or any(isinstance(h, bool) or not isinstance(h, int) or not 1 <= h <= 252 for h in horizons):
+        raise ValueError("Research horizons must be unique positive session counts <=252")
     if market not in ("us", "cn", "unknown"):
         raise ValueError("Unknown research market")
     windows = audit["windows"]
@@ -58,11 +60,11 @@ def build_research_pool(results, definitions, audit, market="unknown", policy=No
         raise ValueError("Duplicate candidate IDs")
     if set(by_id) != {r["candidate_id"] for r in results}:
         raise ValueError("Research definitions and metric candidate sets differ")
-    selected = {"1": [], "5": []}
+    selected = {str(h): [] for h in horizons}
     assessments = []
     wanted = ("rows", "mean_daily_rank_ic", "rank_icir", "rank_ic_hit_ratio", "coverage", "turnover")
     for row in results:
-        for h in ("1", "5"):
+        for h in selected:
             values = row.get("horizons", {}).get(h, {})
             metrics = {name: {k: values.get(name, {}).get(k) for k in wanted} for name in ("train", "validation")}
             fit = metrics["train"]["mean_daily_rank_ic"]
