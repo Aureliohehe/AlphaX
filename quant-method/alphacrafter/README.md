@@ -340,3 +340,7 @@ Miner 可用 `--llm-seed-file candidates_four_factor_core_v1.json --llm-model de
 四因子定向 LLM 模式为每个对照分配独立的 LangGraph 提案任务。允许同族窗口替换、原信号时序均值，以及防御信号的时序最小值或最大值。周频 LLM 替换须在训练期三个配对分段里至少两段提高组合 Rank IC，且前 30 名最差一成持有收益不恶化、名单更换增加不超过两个百分点，然后才与原因子比较验证期表现。
 
 定向 LLM 生成可加 `--llm-weekly-feedback-dir <上一轮频率研究输出>`。系统只导入已完成的研究窗口，按原控制因子分发组合初筛失败项、标准及双倍成本交易失败项和相对原组合的差值。下一轮输出的 `weekly_llm_feedback.json` 记录反馈及输入指纹，已测表达式不能重复提交。Miner 的 `--as-of` 必须不早于反馈窗口结束日。例如，使用 2022–2023 年交易反馈时，下一轮截止日不得早于 2023-12-31。由此产生的候选需要在更晚的窗口验证。
+
+### 试用外部因子研究 skill
+
+将上游 `quantskills/skill-factor-mine` 检出到项目外的目录，运行 Miner 时指定 `--llm-factor-mine-skill-dir <checkout>`。当前适配用于单轮 LLM 生成，直接或 LangGraph 后端均可，可独立生成，也可与 `--llm-seed-file` 搭配。入口读取上游说明和两个实验记录参考文件，并在产物中保存文件哈希。每个模型候选必须含 `iteration_note` 的 `op_type`、`hypothesis`、`change`、`expected` 四个字段。独立提案使用 `add_factor`，定向替换使用 `modify_factor`。这一适配复用提案流程，信号预处理、相关性评估、实验执行及准入由本项目处理。

@@ -49,6 +49,7 @@ def _candidate_payload(candidate: Candidate) -> Dict[str, object]:
         "features": list(candidate.features),
         "hypothesis": candidate.hypothesis,
         "control_id": candidate.control_id,
+        "iteration_note": candidate.iteration_note,
     }
     if candidate.expression_spec is not None:
         payload["expression"] = candidate.expression_spec

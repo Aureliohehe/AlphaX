@@ -124,6 +124,7 @@ class Candidate:
     hypothesis: str
     expression_spec: Optional[Dict[str, object]] = None
     control_id: Optional[str] = None
+    iteration_note: Optional[Dict[str, object]] = None
 
     @property
     def expression(self) -> str:
@@ -433,6 +434,7 @@ def candidate_from_dict(value: Dict[str, object]) -> Candidate:
         hypothesis=str(value.get("hypothesis", "")),
         expression_spec=expression_spec,
         control_id=control_id,
+        iteration_note=value.get("iteration_note") if isinstance(value.get("iteration_note"), dict) else None,
     )
     validate_candidate(candidate)
     return candidate
@@ -1332,6 +1334,8 @@ def main() -> None:
         ),
     )
     parser.add_argument("--llm-count", type=int, default=40)
+    parser.add_argument("--llm-factor-mine-skill-dir", type=Path,
+                        help="Local upstream factor-mine skill checkout, for one LLM proposal round")
     parser.add_argument("--llm-weekly-feedback-dir", type=Path,
                         help="Completed earlier Trader research to inform seeded LangGraph proposals")
     parser.add_argument("--llm-seed-file", type=Path,
@@ -1419,6 +1423,8 @@ def main() -> None:
     args = parser.parse_args()
     if min(args.search_rounds, args.search_budget, args.search_batch_size) < 1 or args.search_folds < 2:
         parser.error("Search budgets/rounds must be positive and folds >=2")
+    if args.llm_factor_mine_skill_dir and (not args.llm_model or args.candidate_file or args.search_rounds != 1):
+        parser.error("--llm-factor-mine-skill-dir requires one LLM proposal round and excludes --candidate-file")
     if args.llm_weekly_feedback_dir and (not args.llm_seed_file or args.llm_orchestrator != "langgraph"):
         parser.error("--llm-weekly-feedback-dir requires seeded LangGraph generation")
     if args.llm_seed_file and (not args.llm_model or args.candidate_file or args.search_rounds != 1):
@@ -1520,6 +1526,7 @@ def main() -> None:
     llm_candidate_audit: List[Dict[str, object]] = []
     search_report = None
     weekly_feedback = None
+    skill_metadata = None
     feedback_prompts = {}
     if args.candidate_file:
         candidates = load_candidates(args.candidate_file, available)
@@ -1541,6 +1548,25 @@ def main() -> None:
                 "Avoid within-stock standardization, rank, slopes, and differences, which measure a different hypothesis. Alternatively, replace its "
                 "input with an available same-family lookback variant. Keep all other portfolio factors "
                 "unchanged; propose only the replacement expression. Choose different seed controls if possible."
+            )
+        if args.llm_factor_mine_skill_dir:
+            from factor_mine_skill import load_factor_mine_skill
+
+            try:
+                instructions, skill_metadata = load_factor_mine_skill(args.llm_factor_mine_skill_dir)
+            except (OSError, ValueError) as exc:
+                parser.error(str(exc))
+            op_type = "modify_factor" if seeds else "add_factor"
+            market_context += (
+                "\nApply the factor-mine proposal discipline from the reference below. "
+                "Project mapping: emit a safe factor AST as JSON; do not edit files, run commands, ask questions, "
+                "or perform evaluation in the response. Existing AlphaCrafter labels, cross-sectional ranks, "
+                "expression constraints, correlation checks and admission policies govern evaluation. "
+                "The runner handles evaluation; no upstream preprocessing or threshold overrides. "
+                f"Add an iteration_note object to each JSON candidate with op_type exactly {op_type}, "
+                "hypothesis, change, and expected (a concrete metric range and side effects), all strings. "
+                "Include one change per candidate, and choose genuinely distinct economic ideas when generating "
+                "new factors. Reference instructions: " + instructions
             )
         if args.llm_weekly_feedback_dir:
             from weekly_llm_feedback import load_weekly_feedback
@@ -1629,6 +1655,17 @@ def main() -> None:
         generator = "template_v1"
     generated_candidates = list(candidates)
     generated_candidate_count = len(candidates)
+    if skill_metadata is not None:
+        from factor_mine_skill import note_failure
+
+        checked = []
+        for candidate in candidates:
+            reason = note_failure(candidate.iteration_note, op_type)
+            llm_candidate_audit.append({"candidate_id": candidate.candidate_id, "origin": "factor-mine",
+                                        "status": "rejected" if reason else "note_validated", "reason": reason})
+            if reason is None:
+                checked.append(candidate)
+        candidates = checked
     if args.llm_seed_file:
         prior_expressions = set(weekly_feedback["prior_expressions"]) if weekly_feedback else set()
         candidates = seeded_llm_candidates(seeds, candidates, llm_candidate_audit, prior_expressions)
@@ -1862,6 +1899,10 @@ def main() -> None:
             json.dumps(search_report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
         )
     registry_path.parent.mkdir(parents=True, exist_ok=True)
+    if skill_metadata is not None:
+        (args.output_dir / "factor_mine_skill.json").write_text(
+            json.dumps(skill_metadata, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+        )
     if weekly_feedback is not None:
         (args.output_dir / "weekly_llm_feedback.json").write_text(
             json.dumps(weekly_feedback, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
