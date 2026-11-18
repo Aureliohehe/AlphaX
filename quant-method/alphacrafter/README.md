@@ -273,3 +273,20 @@ python3 -m unittest discover -v
 ```
 
 特征生成和 Screener 现在保留没有未来标签的最新交易日；Screener 合成信号时任何成分缺失都保留为缺失，不再因因子顺序不同得到不同结果。旧特征/信号缓存不会自动更新，需要另行重建。
+
+## 四因子与多 Agent 加权回测
+
+四因子策略为核心仓，多 Agent 策略为探索仓。默认初始资金分配为 80% / 20%，用 `--agent-weight` 调整。两路分别按净值滚动，期间不划拨资金，实际权重随表现漂移。每日合并净值等于两个子账本的净值之和，等价于按前一日资金权重加权当日净收益。
+
+1. 多 Agent Miner 生成候选，沿用上游准入流程，Screener 对通过准入的沪深 300 候选生成收盘分数。
+2. 将获准的沪深 300 Screener `predictions.csv` 传给 `--approved-agent-signals`。入口兼容 `datetime,instrument,prediction` 和 `date,ticker,prediction`，检查历史成员、信号日和唯一性。调用方负责确认准入和信号来源。首个执行日需要上一个交易日的收盘信号，信号文件的末日最迟为最后执行日的前一交易日。
+3. 若本窗口没有获准策略，使用 `--agent-cash`。Agent 子账本按冻结四因子实验的 A 股执行参数模拟，标准和双倍佣金及滑点分别输出。产物包含三路指标、合并逐日净值、Agent 交易和持仓，以及输入指纹。
+
+```bash
+python3 quant-method/alphacrafter/run_core_agent_blend.py \
+  --core-dir quant-method/machine-learn/data/qlib/alphacrafter_positive_holdout_20261117 \
+  --agent-cash --agent-weight 0.20 \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_core_agent_blend
+```
+
+该入口从已完成的四因子实验读取窗口与成本设置。2024–2025 的数据已被观察，可用于链路回放。组合仍可能亏损，评估 Agent 增量需要预先冻结权重、准入与执行规则，并使用新的评估窗口。
