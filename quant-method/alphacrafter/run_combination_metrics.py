@@ -7,7 +7,6 @@ import pandas as pd
 
 from medium_frequency import TRADER_HORIZONS, anchor_mask, daily_rank_ic
 from miner_lite import evaluate_candidate_score, load_candidates
-from run_medium_frequency import miner_candidate_source
 from temporal import is_feature_column
 from trader_lite import file_fingerprint
 
@@ -87,6 +86,8 @@ def paired_metrics(frame, core, variant, target_column, topk, start, end):
 
 
 def main():
+    from run_medium_frequency import miner_candidate_source
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--miner-dir", type=Path, required=True)
     parser.add_argument("--panel", type=Path, required=True)
