@@ -135,6 +135,21 @@ class SearchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rolling_feedback(self.frame.iloc[:8], self.candidate, ["x"], self.targets, self.ends)
 
+    def test_llm_prompt_preserves_slots_and_requests_testable_hypotheses(self):
+        from miner_lite import generate_llm_candidates
+
+        response = json.dumps([{"candidate_id": "tail", "hypothesis": "test",
+                                "expression": {"op": "ts_quantile", "feature": "x",
+                                               "window": 20, "quantile": .25}}])
+        with patch("miner_lite._deepseek_completion", return_value=response) as provider:
+            results = generate_llm_candidates("deepseek-chat", ["x"], "weekly context", 2)
+        self.assertEqual([candidate.candidate_id for candidate in results], ["tail"])
+        prompt = provider.call_args.args[0][1]["content"]
+        self.assertIn("holding horizon", prompt)
+        self.assertIn("one observable result that would count against", prompt)
+        self.assertIn("Generate exactly 2", prompt)
+        self.assertIn("weekly context", prompt)
+
     def test_specialists_share_requested_budget_even_with_duplicates(self):
         from miner_lite import generate_llm_candidate_cluster
         with patch("miner_lite.generate_llm_candidates", return_value=[self.candidate]) as provider:

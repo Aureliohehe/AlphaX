@@ -681,7 +681,8 @@ Generate exactly {count} candidate factors using only the approved feature names
 Do not use future data, prices after the as_of date, arbitrary Python, or unavailable fields.
 A candidate must be a JSON object with:
   candidate_id: short unique snake_case string
-  hypothesis: one sentence
+  hypothesis: one or two short sentences naming the expected direction, holding horizon,
+    and one observable result that would count against the idea
   features: the unique leaf features used by the expression
   expression: a safe expression object, for example:
     {{"op":"ts_zscore","feature":"return_5d","window":20}}
