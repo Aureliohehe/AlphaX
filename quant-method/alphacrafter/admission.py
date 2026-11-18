@@ -22,6 +22,15 @@ class ResearchPolicy:
             raise ValueError("Invalid research hit/coverage/turnover thresholds")
 
 
+# Initial research settings. Rank turnover is measured between sampled
+# signals, so weekly/monthly limits apply per rebalance observation.
+HORIZON_RESEARCH_POLICIES = {
+    1: ResearchPolicy(),
+    5: ResearchPolicy(min_rank_ic=.010, min_rank_icir=.10, min_hit=.53, max_turnover=.50),
+    20: ResearchPolicy(min_rank_ic=.010, min_rank_icir=.08, min_hit=.52, max_turnover=.65),
+}
+
+
 def finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -41,11 +50,13 @@ def research_failures(metric, direction, policy):
     return [name for name, passed in checks.items() if not passed]
 
 
-def build_research_pool(results, definitions, audit, market="unknown", policy=None, horizons=(1, 5)):
+def build_research_pool(results, definitions, audit, market="unknown", policy=None, horizons=(1, 5), *, policies_by_horizon=None):
     """Read train/development only; direction is fit separately per horizon."""
     policy = policy or ResearchPolicy()
     if not horizons or len(set(horizons)) != len(horizons) or any(isinstance(h, bool) or not isinstance(h, int) or not 1 <= h <= 252 for h in horizons):
         raise ValueError("Research horizons must be unique positive session counts <=252")
+    if policies_by_horizon is not None and set(policies_by_horizon) != set(horizons):
+        raise ValueError("An explicit research policy is required for every evaluated horizon")
     if market not in ("us", "cn", "unknown"):
         raise ValueError("Unknown research market")
     windows = audit["windows"]
@@ -69,7 +80,8 @@ def build_research_pool(results, definitions, audit, market="unknown", policy=No
             metrics = {name: {k: values.get(name, {}).get(k) for k in wanted} for name in ("train", "validation")}
             fit = metrics["train"]["mean_daily_rank_ic"]
             direction = (1 if fit > 0 else -1) if finite(fit) and fit != 0 else None
-            failures = {name: research_failures(m, direction, policy) for name, m in metrics.items()}
+            horizon_policy = policy if policies_by_horizon is None else policies_by_horizon[int(h)]
+            failures = {name: research_failures(m, direction, horizon_policy) for name, m in metrics.items()}
             if not complete:
                 failures["window_completion"] = ["development_incomplete"]
             eligible = not any(failures.values())
@@ -91,6 +103,9 @@ def build_research_pool(results, definitions, audit, market="unknown", policy=No
             "evaluated_candidates": len(results), "candidates_by_horizon": selected,
             "eligible_counts": {h: len(v) for h, v in selected.items()},
             "strategy_admitted_count": 0}
+    if policies_by_horizon is not None:
+        del pool["policy"]
+        pool["policies_by_horizon"] = {str(h): asdict(policies_by_horizon[h]) for h in horizons}
     return pool, assessments
 
 
@@ -125,3 +140,25 @@ def validate_trader_pool(pool, horizon, validation_start):
         raise ValueError("Independent strategy validation must start after research cutoff")
     if not pool.get("candidates_by_horizon", {}).get(str(horizon)):
         raise ValueError("Research pool has no eligible candidates for this horizon")
+
+
+def assess_weekly_substitution(core, substitution, *, independent):
+    """Require paired net improvement under both costs and no worse drawdown."""
+    scenarios = {"1", "2"}
+    if set(core) != scenarios or set(substitution) != scenarios:
+        raise ValueError("Substitution requires both standard and double-cost results")
+    checks = {}
+    for cost in sorted(scenarios):
+        baseline, variant = core[cost], substitution[cost]
+        left, right = baseline["calendar_year_returns"], variant["calendar_year_returns"]
+        if (not left or left.keys() != right.keys()
+                or any(baseline.get(key) != variant.get(key) for key in ("start", "end", "trading_days"))):
+            raise ValueError("Substitution and control must cover the same evaluation window")
+        checks[cost] = {
+            "higher_net_return": variant["cumulative_return"] > baseline["cumulative_return"],
+            "no_worse_drawdown": variant["max_drawdown"] >= baseline["max_drawdown"],
+            "no_worse_worst_year": min(right.values()) >= min(left.values()),
+        }
+    passed = all(passed for cost in checks.values() for passed in cost.values())
+    return {"checks": checks, "passes_paired_checks": passed,
+            "independent_window": independent, "replacement_admitted": bool(independent and passed)}

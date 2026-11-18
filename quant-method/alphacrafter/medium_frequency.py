@@ -6,6 +6,7 @@ from cn_portfolio import CNConfig
 
 
 HORIZONS = (5, 20)
+TRADER_HORIZONS = (1, *HORIZONS)
 FACTOR_HYPOTHESES = {
     "mf_momentum_60_skip5": "Intermediate momentum excluding the most recent week",
     "mf_momentum_120_skip20": "Longer momentum excluding recent monthly reversal",
@@ -56,7 +57,7 @@ def execution_labels(dates, open_, calendar, horizons=HORIZONS):
     return result.replace([np.inf, -np.inf], np.nan)
 
 
-def factor_panel(raw, calendar, end=None):
+def factor_panel(raw, calendar, end=None, *, horizons=HORIZONS):
     """Use complete stock history before membership filtering; unknown bars remain unknown."""
     if raw.ticker.nunique() != 1 or raw.date.duplicated().any():
         raise ValueError("Expected one stock and unique sessions")
@@ -85,7 +86,7 @@ def factor_panel(raw, calendar, end=None):
     out["mf_reversal_20"] = -(close / close.shift(20) - 1)
     current_valid = frame[["open", "close", "high", "low", "volume"]].notna().all(axis=1)
     out.loc[~current_valid, list(FACTOR_HYPOTHESES)] = np.nan
-    return pd.concat([out, execution_labels(frame.date, frame.open, calendar)], axis=1).replace([np.inf, -np.inf], np.nan)
+    return pd.concat([out, execution_labels(frame.date, frame.open, calendar, horizons=horizons)], axis=1).replace([np.inf, -np.inf], np.nan)
 
 
 def anchor_mask(dates, calendar, first_execution, horizon):
@@ -108,7 +109,7 @@ def daily_rank_ic(frame, score, target):
 def screen_signals(frame, pool, horizon, calendar, first_execution, start, end,
                    lookback_periods=12, min_periods=6, min_rank_ic=0.):
     """Screener learns only from completed matching-horizon, nonoverlapping events."""
-    if lookback_periods < min_periods or min_periods < 1 or horizon not in HORIZONS:
+    if lookback_periods < min_periods or min_periods < 1 or horizon not in TRADER_HORIZONS:
         raise ValueError("Invalid medium-frequency screening settings")
     if pool.get("label_mode") != "execution_open_open":
         raise ValueError("Medium-frequency screening requires open-to-open labels")
@@ -126,7 +127,7 @@ def screen_signals(frame, pool, horizon, calendar, first_execution, start, end,
     ends = frame.groupby("date")[f"label_end_{horizon}d"].first()
     for entry in entries:
         name, direction = entry["candidate_id"], entry["direction"]
-        score = direction * frame[entry["definition"]["features"][0]]
+        score = direction * frame[entry.get("score_column") or entry["definition"]["features"][0]]
         scores[name] = score.groupby(frame.date).rank(pct=True)
         ic = daily_rank_ic(frame, score.where(anchors), label)
         events[name] = pd.DataFrame({"source": ic.index, "end": ends.reindex(ic.index).to_numpy(), "ic": ic.to_numpy()}).dropna()

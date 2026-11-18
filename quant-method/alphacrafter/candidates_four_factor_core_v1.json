@@ -1,0 +1,6 @@
+[
+  {"candidate_id": "mf_low_volatility_60", "op": "feature", "features": ["mf_low_volatility_60"], "hypothesis": "Lower 60-session realized volatility supports a defensive portfolio."},
+  {"candidate_id": "mf_low_downside_risk_60", "op": "feature", "features": ["mf_low_downside_risk_60"], "hypothesis": "Lower 60-session downside variation supports a defensive portfolio."},
+  {"candidate_id": "mf_momentum_120_skip20", "op": "feature", "features": ["mf_momentum_120_skip20"], "hypothesis": "Longer momentum excluding the most recent 20 sessions captures persistent trends."},
+  {"candidate_id": "mf_trend_60_120", "op": "feature", "features": ["mf_trend_60_120"], "hypothesis": "The ratio of the 60- and 120-session moving averages captures persistent trends."}
+]

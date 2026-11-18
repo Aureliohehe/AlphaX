@@ -1,4 +1,4 @@
-"""Separate 5/20-session Miner/Screener/Trader research; never reads holdout performance."""
+"""Compare 1/5/20-session Miner/Screener/Trader research; never reads holdout performance."""
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -9,22 +9,47 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from admission import build_research_pool, strategy_plan
+from admission import HORIZON_RESEARCH_POLICIES, build_research_pool, strategy_plan
 from cn_portfolio import simulate_cn
-from medium_frequency import (HORIZONS, FACTOR_HYPOTHESES, anchor_mask, definitions, factor_panel,
-                              load_member_bars, screen_signals, strategy_presets)
-from miner_lite import evaluate_score, metric_dict
+from medium_frequency import (TRADER_HORIZONS, anchor_mask, factor_panel,
+                              load_member_bars, screen_signals)
+from miner_lite import evaluate_candidate_score, evaluate_score, load_candidates, metric_dict
 from run_cn_portfolio_research import load_quotes
+from temporal import is_feature_column
+from trader_harness import frequency_presets, select_frequency
 from trader_lite import file_fingerprint, is_feasible, summarize
 
 HERE = Path(__file__).resolve().parent
 ML = HERE.parent / "machine-learn"
 
 
+def miner_candidate_source(directory, cutoff):
+    """Use the proposal inventory, then apply the matching-horizon research gate."""
+    registry_path = directory / "registry.json"
+    candidate_path = directory / "candidates.json"
+    registry = json.loads(registry_path.read_text())
+    generator = registry.get("generator", "")
+    if not isinstance(generator, str):
+        raise ValueError("Miner registry has an invalid generator")
+    if (registry.get("registry_version") != "miner-lite-v3"
+            or not (generator in {"external_json", "template_v1"}
+                    or generator.startswith(("llm_cluster:", "llm_langgraph:", "llm_feedback_search:")))):
+        raise ValueError("Expected Miner output from the JSON, template, or LLM generator")
+    as_of = pd.Timestamp(registry["as_of"])
+    if pd.isna(as_of) or as_of > pd.Timestamp(cutoff):
+        raise ValueError("Miner candidate cutoff is after the frequency research cutoff")
+    entries = json.loads(candidate_path.read_text())
+    if not isinstance(entries, list) or len(entries) != registry["candidate_count"]:
+        raise ValueError("Miner candidate inventory differs from its registry")
+    return candidate_path, registry_path, generator, entries
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--evaluate-strategies", action="store_true", help="Run fixed weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
+    parser.add_argument("--miner-dir", type=Path, required=True, help="Completed Miner directory with candidates.json and registry.json")
+    parser.add_argument("--feature-panel", type=Path, help="Date/ticker feature panel for Miner expressions using additional input columns")
+    parser.add_argument("--evaluate-strategies", action="store_true", help="Compare daily/weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     if out.exists():
@@ -35,7 +60,8 @@ def main():
     visible_end = "2023-12-31" if args.evaluate_strategies else "2021-12-31"
     calendar = pd.DatetimeIndex(pd.to_datetime((source / "qlib_day.txt").read_text().splitlines()))
     first_execution = calendar[calendar >= "2022-01-01"][0]
-    presets = strategy_presets()
+    presets = frequency_presets()
+    candidate_path, registry_path, generator, candidate_defs = miner_candidate_source(args.miner_dir, "2021-12-31")
     out.mkdir(parents=True)
 
     def clean(value):
@@ -53,11 +79,15 @@ def main():
     write("status.json", {"status": "preparing"})
     inputs = [source / "daily_pv.h5", source / "qlib_csi300.txt", source / "qlib_day.txt",
               Path(__file__), HERE / "medium_frequency.py", HERE / "cn_portfolio.py", HERE / "admission.py",
-              HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "run_cn_portfolio_research.py"]
+              HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "trader_harness.py",
+              HERE / "run_cn_portfolio_research.py"]
+    inputs.extend([candidate_path, registry_path])
+    if args.feature_panel:
+        inputs.append(args.feature_panel)
     hashes = {str(p): file_fingerprint(p) for p in inputs}
     manifest = {"scope": "retrospective_medium_frequency_research_not_live_execution",
                 "created_at": datetime.now(timezone.utc).isoformat(), "sources": hashes,
-                "definitions": definitions(), "horizons": list(HORIZONS), "visible_end": visible_end,
+                "definitions": candidate_defs, "miner_generator": generator, "horizons": list(TRADER_HORIZONS), "visible_end": visible_end,
                 "label_mode": "execution_open_open", "label_rule": "T-close signal; entry T+1 open; exit T+h+1 open",
                 "research_train": ["2010-01-01", "2018-12-31"], "research_development": ["2019-01-01", "2021-12-31"],
                 "strategy_iteration": ["2022-01-01", "2023-12-31"], "final_reserved": ["2024-01-01", "2025-12-31"],
@@ -72,7 +102,7 @@ def main():
                                 "Phase and terminal wind-down are frozen; factor rank turnover is not portfolio turnover",
                                 "Research admission remains exploratory; 2022–2023 strategy results are iteration data, not fresh independent validation"]}
     write("manifest.json", manifest)
-    write("definitions_frozen.json", definitions())
+    write("definitions_frozen.json", candidate_defs)
     snapshots = out / "source_snapshot"
     snapshots.mkdir()
     for p in inputs:
@@ -83,7 +113,7 @@ def main():
         parts, expected = [], 0
         groups = bars.groupby("ticker", sort=True)
         for i, (ticker, raw) in enumerate(groups, 1):
-            values = factor_panel(raw, calendar, end=visible_end)
+            values = factor_panel(raw, calendar, end=visible_end, horizons=TRADER_HORIZONS)
             membership = intervals[intervals.ticker == ticker]
             keep = pd.Series(False, index=values.index)
             for row in membership.itertuples():
@@ -102,21 +132,35 @@ def main():
             expected += int(mask.sum())
         if frame.duplicated(["date", "ticker"]).any() or len(frame) != expected:
             raise ValueError("Medium-frequency panel does not match supplied historical member rows")
-        frame.to_csv(out / "features_labels.csv.gz", index=False, compression={"method": "gzip", "compresslevel": 1})
+        required = {feature for entry in candidate_defs for feature in entry["features"]}
+        if any(not is_feature_column(feature) or feature.startswith("__miner_score_") for feature in required):
+            raise ValueError("Miner expressions must use feature columns, never labels or internal scores")
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            if args.feature_panel is None:
+                raise ValueError("Miner expressions require --feature-panel columns: " + ", ".join(missing))
+            external = pd.read_csv(args.feature_panel, usecols=["date", "ticker", *missing], parse_dates=["date"])
+            external = external.loc[external.date <= pd.Timestamp(visible_end)]
+            frame = frame.merge(external, on=["date", "ticker"], how="left", validate="one_to_one")
+        candidates = load_candidates(candidate_path, sorted(required))
         write("feature_audit.json", {"rows": len(frame), "expected_membership_rows": expected,
-                                     "max_visible_signal_date": str(frame.date.max().date()), "features": list(FACTOR_HYPOTHESES)})
+                                     "max_visible_signal_date": str(frame.date.max().date()), "candidate_inputs": sorted(required)})
         write("status.json", {"status": "researching_factors"})
         results = []
-        for definition in definitions():
-            name = definition["candidate_id"]
+        score_columns = {}
+        for index, candidate in enumerate(candidates):
+            name = candidate.candidate_id
+            column = f"__miner_score_{index}"
+            frame[column] = evaluate_candidate_score(candidate, frame)
+            score_columns[name] = column
             metrics = {}
-            for h in HORIZONS:
+            for h in TRADER_HORIZONS:
                 anchors = anchor_mask(frame.date, calendar, first_execution, h)
                 metrics[str(h)] = {}
                 for split, start, end in (("train", "2010-01-01", "2018-12-31"), ("validation", "2019-01-01", "2021-12-31")):
                     label_end = frame[f"label_end_{h}d"]
                     mask = anchors & frame.date.between(start, end) & label_end.notna() & label_end.le(pd.Timestamp(end))
-                    m = metric_dict(evaluate_score(frame.date, frame[name], frame[f"target_open_open_{h}d"], mask, frame.ticker))
+                    m = metric_dict(evaluate_score(frame.date, frame[column], frame[f"target_open_open_{h}d"], mask, frame.ticker))
                     m["sampled_signal_days"] = int(frame.loc[mask, "date"].nunique())
                     metrics[str(h)][split] = m
             results.append({"candidate_id": name, "horizons": metrics})
@@ -124,7 +168,15 @@ def main():
         audit = {"as_of": "2021-12-31", "label_mode": "execution_open_open",
                  "windows": {"train": ["2010-01-01", "2018-12-31"], "validation": ["2019-01-01", "2021-12-31"]}}
         write("research_temporal_audit.json", audit)
-        pool, assessments = build_research_pool(results, definitions(), audit, "cn", horizons=HORIZONS)
+        pool, assessments = build_research_pool(
+            results, candidate_defs, audit, "cn", horizons=TRADER_HORIZONS,
+            policies_by_horizon={h: HORIZON_RESEARCH_POLICIES[h] for h in TRADER_HORIZONS},
+        )
+        for entries in pool["candidates_by_horizon"].values():
+            for entry in entries:
+                entry["score_column"] = score_columns[entry["candidate_id"]]
+        pool["miner_generator"] = generator
+        frame.to_csv(out / "features_labels.csv.gz", index=False, compression={"method": "gzip", "compresslevel": 1})
         write("factor_metrics.json", results)
         write("research_pool.json", pool)
         write("research_assessments.json", assessments)
@@ -140,6 +192,9 @@ def main():
                     trials.append({"horizon": h, "status": "not_run_no_research_candidates"})
                     continue
                 signals, selections = screen_signals(frame, pool, h, calendar, first_execution, "2022-01-01", "2023-12-31")
+                if signals.empty or not np.isfinite(signals.prediction).any():
+                    trials.append({"horizon": h, "status": "not_run_no_screened_signals"})
+                    continue
                 signals.to_csv(out / f"signals_{h}d.csv.gz", index=False)
                 selections.to_csv(out / f"screening_{h}d.csv", index=False)
                 quotes = load_quotes(source / "daily_pv.h5", set(signals.ticker), calendar, "2022-01-01", "2023-12-31")
@@ -158,16 +213,16 @@ def main():
                 raise ValueError("Input/code changed: " + p)
         summary = {"research_eligible": pool["eligible_counts"], "strategies": trials, "holdout_evaluated": False,
                    "strategy_window_is_previously_examined": True, "scope": manifest["scope"]}
-        feasible = [r for r in trials if r.get("status") == "feasible_in_proxy"]
-        selected = max(feasible, key=lambda r: r["sharpe"], default=None)
-        write("strategy_selection.json", {"selected_horizon": selected["horizon"] if selected else None,
-                                           "status": "selected_in_iteration_proxy" if selected else "no_feasible_strategy" if args.evaluate_strategies else "not_evaluated",
-                                           "holdout_evaluated": False})
+        selection = select_frequency(trials, manifest["strategy_iteration"], evaluated=args.evaluate_strategies)
+        write("strategy_selection.json", {**selection, "market": "cn", "label_mode": pool["label_mode"],
+                                           "frozen_as_of": manifest["strategy_iteration"][1],
+                                           "screening": manifest["screening"],
+                                           "research_pool_sha256": file_fingerprint(out / "research_pool.json")["sha256"]})
         write("summary.json", summary)
         write("status.json", {"status": "completed_research"})
         lines = ["# Medium-frequency factor and strategy research", "",
                  f"Research eligibility: {pool['eligible_counts']}. Reserved 2024–2025 not evaluated.", "",
-                 "Labels: next-open entry to open after 5/20 holding sessions; research uses fixed nonoverlapping anchors.",
+                 "Labels: next-open entry to open after 1/5/20 holding sessions; research uses fixed nonoverlapping anchors.",
                  "Research 2010–2018 / development 2019–2021; strategy iterations 2022–2023 were previously examined.", "",
                  "| Holding horizon | Status | Net cumulative | Annualized | Max drawdown | Mean daily turnover |", "|---|---|---:|---:|---:|---:|"]
         for trial in trials:

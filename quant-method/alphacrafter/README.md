@@ -290,3 +290,43 @@ python3 quant-method/alphacrafter/run_core_agent_blend.py \
 ```
 
 该入口从已完成的四因子实验读取窗口与成本设置。2024–2025 的数据已被观察，可用于链路回放。组合仍可能亏损，评估 Agent 增量需要预先冻结权重、准入与执行规则，并使用新的评估窗口。
+
+## 四因子模板与替换对照
+
+`candidates_four_factor_core_v1.json` 保存四项原始因子，使用 Miner 候选格式。配套周频研究入口按原公式生成信号，每个模板只改一个窗口参数，逐一替换组合中对应的一项。2022–2023 年的两档成本结果用于冻结一个变体，按最差年度扣费收益排序。随后在已观察过的 2024–2025 年回放四因子对照、替换后的四因子组合和只用所选模板信号的组合。三路采用同一执行配置，回放基准净值与历史四因子账本逐日复核。
+
+```bash
+python3 quant-method/alphacrafter/run_four_factor_template_research.py \
+  --output-dir quant-method/machine-learn/data/qlib/alphacrafter_four_factor_templates
+```
+
+该入口使用 JSON 预设和确定性模板，研究的是单项替换的扣费表现。原 Miner 的 1 日和 5 日准入门槛不参与模板选择。
+
+### 按频率初筛和周频替换准入
+
+日频研究继续使用既有初筛。周频和月频研究各自使用从次日开盘起持有 5 或 20 个交易日的收益标签，并只在对应调仓日抽样。阈值写入 `research_pool.json` 的 `policies_by_horizon`。以下是初始研究门槛，正式短周期 Miner 入库仍按自身规则执行。
+
+| 频率 | Rank IC | Rank ICIR | 方向命中率 | 覆盖率 | 调仓观察间的排名换手 |
+|---|---:|---:|---:|---:|---:|
+| 日频 | >0.015 | >0.10 | >55% | >90% | <40% |
+| 周频 | >0.010 | >0.10 | >53% | >90% | <50% |
+| 月频 | >0.010 | >0.08 | >52% | >90% | <65% |
+
+周频四因子替换还需要在独立窗口内，同时通过标准与双倍佣金、滑点的对照。每档都要求净收益提高、最大回撤和最差年度收益不恶化。
+
+### A 股 TraderHarness 选择调仓频率
+
+运行 `run_medium_frequency.py --miner-dir <Miner 输出目录> --evaluate-strategies --output-dir <新目录>`，同一验证窗口内评估日频、周频、月频配置。日频 A 股使用次日开盘建仓和至少一个交易日的持仓锁，按开盘到开盘的标签研究；它与原日内 Trader 的开盘到收盘口径不同。没有候选因子或没有筛出信号的频率记为跳过。TraderHarness 在收益、Sharpe、回撤、执行约束合格者中选扣费后 Sharpe 最高的频率，同分优先调仓更慢的配置。完整选择写入 `strategy_selection.json`，无合格配置时返回空仓决策。
+
+频率入口只从 Miner 的 candidates.json 和 registry.json 接收候选，支持 JSON、模板和 LLM 三种来源。候选用各频率的标签独立重评，Miner 旧的短周期入库结论不作为周频或月频准入。Python 量价字段可作为候选的输入。若表达式使用额外字段，通过 --feature-panel 提供按交易日和股票代码对齐的特征。历史实跑文件保留原命令和来源。
+
+### 组合指标初筛
+
+`run_combination_metrics.py` 从 Miner 输出读取四因子核心及带 `control_id` 的替换候选，并使用频率研究产出的特征和开盘到开盘标签。它用原组合和每个单项替换做配对比较，分别输出组合 Rank IC、Rank ICIR、滚动窗口胜数、前 30 名最差一成持有收益、名单更换和覆盖率。前 30 名只按信号排，若有任一股票缺少已成熟收益，该日不进入配对持有收益统计。日、周、月以 1、5、20 个交易日分别采样。该入口不模拟成交，也不写入交易准入结果。
+
+```bash
+python3 quant-method/alphacrafter/run_combination_metrics.py \
+  --miner-dir <Miner输出目录> --panel <频率研究的features_labels.csv.gz> \
+  --calendar <qlib_day.txt> --start 2022-01-01 --end 2023-12-31 \
+  --output <新报告.json>
+```

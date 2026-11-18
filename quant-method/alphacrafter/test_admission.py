@@ -7,7 +7,8 @@ import unittest
 
 import pandas as pd
 
-from admission import ResearchPolicy, build_research_pool, research_failures, strategy_plan, validate_trader_pool
+from admission import (HORIZON_RESEARCH_POLICIES, ResearchPolicy, assess_weekly_substitution,
+                       build_research_pool, research_failures, strategy_plan, validate_trader_pool)
 from screener_lite import load_factor_library
 from trader_lite import select_configuration
 
@@ -73,6 +74,25 @@ class AdmissionTests(unittest.TestCase):
             self.assertIn(failure, research_failures({**metric, key: value}, 1, ResearchPolicy()))
         with self.assertRaises(ValueError):
             ResearchPolicy(min_rank_icir=float("nan"))
+
+    def test_frequency_profiles_apply_only_to_their_own_horizon(self):
+        for values in self.results[0]["horizons"].values():
+            for split in ("train", "validation"):
+                values[split]["rank_ic_hit_ratio"] = .54
+        pool, _ = build_research_pool(self.results, self.definitions, self.audit,
+                                      policies_by_horizon={h: HORIZON_RESEARCH_POLICIES[h] for h in (1, 5)})
+        self.assertEqual(pool["eligible_counts"], {"1": 0, "5": 1})
+        self.assertEqual(pool["policies_by_horizon"]["5"]["min_hit"], .53)
+
+    def test_replacement_requires_both_costs_and_independent_window(self):
+        baseline = {"cumulative_return": .1, "max_drawdown": -.08, "calendar_year_returns": {"2024": .1}}
+        improved = {**baseline, "cumulative_return": .11, "calendar_year_returns": {"2024": .11}}
+        core = {"1": baseline, "2": baseline}
+        self.assertFalse(assess_weekly_substitution(core, {"1": improved, "2": baseline},
+                                                   independent=True)["passes_paired_checks"])
+        result = assess_weekly_substitution(core, {"1": improved, "2": improved}, independent=False)
+        self.assertTrue(result["passes_paired_checks"])
+        self.assertFalse(result["replacement_admitted"])
 
     def test_independent_plan_and_execution_guard(self):
         pool, _ = self.pool("cn")
