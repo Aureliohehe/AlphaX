@@ -1299,6 +1299,8 @@ def main() -> None:
     parser.add_argument("--search-budget", type=int, default=40, help="Total proposal slots across feedback rounds")
     parser.add_argument("--search-batch-size", type=int, default=10)
     parser.add_argument("--search-folds", type=int, default=3)
+    parser.add_argument("--search-reserve", type=int, default=0,
+                        help="Proposal slots within search-budget to replace missing candidates with new hypotheses")
     parser.add_argument(
         "--llm-orchestrator",
         choices=("direct", "langgraph"),
@@ -1377,6 +1379,8 @@ def main() -> None:
         parser.error("Search budgets/rounds must be positive and folds >=2")
     if args.search_rounds > 1 and (not args.llm_model or args.candidate_file):
         parser.error("Feedback search requires --llm-model and no --candidate-file")
+    if not 0 <= args.search_reserve < args.search_budget or (args.search_reserve and args.search_rounds < 2):
+        parser.error("Search reserve must be smaller than the total budget and requires feedback rounds")
     if args.maintenance_interval_days < 1:
         parser.error("--maintenance-interval-days must be positive")
     registry_path = args.registry or args.output_dir / "registry.json"
@@ -1493,7 +1497,8 @@ def main() -> None:
                     "\nInclude control_id in each candidate object. For a follow-up set it to a prior "
                     "candidate_id and change exactly one AST scalar (one feature, operator, or parameter "
                     "with the AST shape unchanged). Each research lineage gets at most one follow-up. "
-                    "Use lineage_followup_used to identify closed lineages. For a genuinely new "
+                    "Respect round_policy when present. At most half the slots are follow-ups. "
+                    "Only use a control with nonempty stable_horizons and an open lineage. For a genuinely new "
                     "hypothesis set control_id to null and use a different set of feature families "
                     "(lookback numbers do not define new families). Use next_validation_tasks to choose "
                     "a follow-up metric and state it in the hypothesis. The folds are training search "
@@ -1511,7 +1516,7 @@ def main() -> None:
             candidates, search_report = run_search(
                 propose, search_frame, available, search_targets, search_ends,
                 rounds=args.search_rounds, budget=args.search_budget,
-                batch_size=args.search_batch_size, folds=args.search_folds,
+                batch_size=args.search_batch_size, folds=args.search_folds, reserve=args.search_reserve,
             )
             generator = f"llm_feedback_search:{args.llm_model}:{args.llm_orchestrator}"
         elif args.llm_orchestrator == "langgraph":

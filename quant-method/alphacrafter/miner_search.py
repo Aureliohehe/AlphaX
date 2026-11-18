@@ -102,8 +102,46 @@ def feature_family(candidate):
     return frozenset(re.sub(r"\d+", "", feature) for feature in candidate.features)
 
 
-def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=40, batch_size=10, folds=3):
+def stable_horizons(report):
+    """Require a majority of folds to favor the same fitted direction."""
+    stable = []
+    for horizon in sorted({fold["horizon"] for fold in report["folds"]}):
+        folds = [fold for fold in report["folds"] if fold["horizon"] == horizon]
+        support = {-1: 0, 1: 0}
+        for fold in folds:
+            direction = fold["direction"]
+            rank_ic = fold["metrics"]["mean_daily_rank_ic"]
+            if direction is not None and rank_ic is not None and direction * rank_ic > 0:
+                support[direction] += 1
+        if max(support.values()) > len(folds) / 2:
+            stable.append(horizon)
+    return stable
+
+
+def fresh_feature_controls(available, families, ids, count):
+    """Spend replacement slots on distinct, previously unused input families."""
+    from miner_lite import Candidate
+
+    used_inputs = set().union(*families)
+    controls = []
+    for index, feature in enumerate(sorted(available)):
+        cid = f"reserve_feature_{index}"
+        control = Candidate(cid, "feature", (feature,),
+                            f"Test the standalone cross-sectional signal from {feature}.")
+        family = feature_family(control)
+        if cid in ids or not family.isdisjoint(used_inputs):
+            continue
+        controls.append(control)
+        used_inputs.update(family)
+        if len(controls) == count:
+            break
+    return controls
+
+
+def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=40, batch_size=10, folds=3, reserve=0):
     """propose(count, feedback) returns safe candidates; every proposal consumes budget."""
+    if reserve < 0 or reserve >= budget:
+        raise ValueError("Search reserve must be nonnegative and smaller than the total budget")
     if min(rounds, budget, batch_size) < 1:
         raise ValueError("Search rounds, budget and batch size must be positive")
     if folds < 2 or frame["date"].nunique() < (folds + 1) * 5:
@@ -112,17 +150,32 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
     from miner_lite import _candidate_expression_spec
 
     history, families, used_lineages = {}, {}, set()
-    spent = 0
-    for round_index in range(rounds):
-        count = min(batch_size, budget - spent)
+    spent, missing = 0, 0
+    stable_controls = set()
+    regular_rounds = min(rounds, (budget - reserve + batch_size - 1) // batch_size)
+    for round_index in range(regular_rounds + reserve):
+        supplemental = round_index >= regular_rounds
+        if supplemental and not missing:
+            break
+        count = min(batch_size, budget - spent, missing) if supplemental else min(batch_size, budget - reserve - spent)
         if count <= 0:
             break
-        proposals = list(propose(count, json.dumps(feedback, ensure_ascii=False, allow_nan=False)))
+        followup_limit = count // 2 if stable_controls and not supplemental else 0
+        context = feedback
+        if reserve:
+            context = [*feedback, {"round_policy": {"max_followups": followup_limit,
+                                                     "min_new_hypotheses": count - followup_limit},
+                                   "previous_rejections": audit[-1]["rejected"] if audit else []}]
+        if supplemental:
+            proposals = fresh_feature_controls(available, families, ids, count)
+        else:
+            proposals = list(propose(count, json.dumps(context, ensure_ascii=False, allow_nan=False)))
         # Reserve the requested count even when providers return fewer or duplicates.
         spent += count
         if len(proposals) > count:
             proposals = proposals[:count]
         current, rejected = [], []
+        followups = 0
         prior = history.copy()
         for candidate in proposals:
             cid, parent = candidate.candidate_id, candidate.control_id
@@ -143,6 +196,10 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
                         reason = "follow_up_must_change_exactly_one_ast_field"
                     elif lineage in used_lineages:
                         reason = "lineage_follow_up_limit_reached"
+                    elif parent not in stable_controls:
+                        reason = "control_lacks_directional_support"
+                    elif followups >= followup_limit:
+                        reason = "follow_up_quota_reached"
                     elif family in families and families[family] != lineage:
                         reason = "feature_family_already_in_another_lineage"
             elif family in families:
@@ -157,6 +214,7 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
             families[family] = lineage
             if parent is not None:
                 used_lineages.add(lineage)
+                followups += 1
             accepted.append(candidate)
             report = rolling_feedback(frame, candidate, available, targets, label_ends, folds)
             # JSON nulls instead of NaN for absent diagnostic metrics.
@@ -167,11 +225,16 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
             report["lineage_id"] = lineage
             report["expression_ast"] = spec
             report["next_validation_tasks"] = validation_tasks(report)
+            report["stable_horizons"] = stable_horizons(report)
+            if report["stable_horizons"]:
+                stable_controls.add(cid)
             current.append(report)
         feedback.extend(current)
         for report in feedback:
             report["lineage_followup_used"] = report["lineage_id"] in used_lineages
+        missing += (0 if supplemental else count) - len(current)
         audit.append({"round": round_index + 1, "requested": count, "returned": len(proposals),
+                      "supplemental": supplemental, "followup_limit": followup_limit,
                       "unique": len(current), "rejected": rejected, "budget_spent": spent})
     return accepted, {"scope": "training_only_research_not_admission", "budget": budget,
-                      "budget_spent": spent, "rounds": audit, "candidates": feedback}
+                      "budget_spent": spent, "reserve": reserve, "rounds": audit, "candidates": feedback}

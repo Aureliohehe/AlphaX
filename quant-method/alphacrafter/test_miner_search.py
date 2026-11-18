@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from miner_lite import Candidate
-from miner_search import changed_fields, rolling_feedback, run_search, validation_tasks
+from miner_search import changed_fields, rolling_feedback, run_search, stable_horizons, validation_tasks
 
 
 class SearchTests(unittest.TestCase):
@@ -90,6 +90,28 @@ class SearchTests(unittest.TestCase):
                          ["lineage_follow_up_limit_reached", "related_hypothesis_requires_control"])
         self.assertIsNone(changed_fields({"op": "feature", "feature": "x"},
                                          {"op": "rank", "input": {"op": "feature", "feature": "x"}}))
+
+    def test_reserve_replaces_missing_slots_with_new_hypotheses(self):
+        calls = []
+        def propose(count, feedback):
+            calls.append((count, json.loads(feedback)[-1]["round_policy"]))
+            return [self.candidate]
+        frame = self.frame.assign(y=self.frame.x)
+        candidates, audit = run_search(propose, frame, ["x", "y"], self.targets, self.ends,
+                                       rounds=2, budget=6, batch_size=2, reserve=2)
+        self.assertEqual([c.features for c in candidates], [("x",), ("y",)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(audit["rounds"][-1]["followup_limit"], 0)
+        self.assertTrue(audit["rounds"][-1]["supplemental"])
+        self.assertEqual(audit["budget_spent"], 6)
+
+    def test_stability_requires_majority_with_same_direction(self):
+        folds = [{"horizon": 1, "direction": direction,
+                  "metrics": {"mean_daily_rank_ic": rank_ic}}
+                 for direction, rank_ic in [(1, .01), (-1, -.02), (1, -.01)]]
+        self.assertEqual(stable_horizons({"folds": folds}), [])
+        folds[-1]["metrics"]["mean_daily_rank_ic"] = .02
+        self.assertEqual(stable_horizons({"folds": folds}), [1])
 
     def test_insufficient_sessions_fail(self):
         with self.assertRaises(ValueError):
