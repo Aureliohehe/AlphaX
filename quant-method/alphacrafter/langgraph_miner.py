@@ -35,6 +35,9 @@ class MinerGraphState(TypedDict, total=False):
     agent_count: int
     per_agent_count: int
     role: str
+    controls: List[str]
+    assigned_control: str
+    feedback_by_control: Dict[str, str]
     candidate_payloads: Annotated[List[Dict[str, object]], operator.add]
     errors: Annotated[List[Dict[str, str]], operator.add]
 
@@ -55,6 +58,8 @@ def _candidate_payload(candidate: Candidate) -> Dict[str, object]:
 def _fan_out(state: MinerGraphState):
     """Create one Send task per specialist; Send tasks run in one graph step."""
     roles = list(MINER_AGENT_ROLES)
+    controls = state.get("controls", [])
+    feedback = state.get("feedback_by_control", {})
     agent_count = max(1, int(state.get("agent_count", len(roles))))
     slots, remainder = divmod(state["requested_count"], agent_count)
     return [
@@ -62,7 +67,11 @@ def _fan_out(state: MinerGraphState):
             "generate_agent_candidates",
             {
                 "available": state["available"],
-                "market_context": state["market_context"],
+                "market_context": (state["market_context"] +
+                                   f"\nYour assigned control_id is {controls[index]}. Propose only changes to this control." +
+                                   feedback.get(controls[index], "")
+                                   if controls else state["market_context"]),
+                "assigned_control": controls[index] if controls else "",
                 "model": state["model"],
                 "per_agent_count": slots + int(index < remainder),
                 "role": roles[index % len(roles)],
@@ -82,7 +91,11 @@ def _generate_agent_candidates(state: MinerGraphState) -> Dict[str, object]:
             int(state["per_agent_count"]),
             role=role,
         )
-        return {"candidate_payloads": [_candidate_payload(candidate) for candidate in candidates]}
+        control = state.get("assigned_control")
+        return {"candidate_payloads": [
+            _candidate_payload(candidate) for candidate in candidates
+            if not control or candidate.control_id == control
+        ][:state["per_agent_count"]]}
     except Exception as exc:  # preserve partial results from other agents
         return {
             "candidate_payloads": [],
@@ -117,6 +130,7 @@ def generate_langgraph_candidates(
     market_context: str,
     count: int,
     agents: int,
+    *, controls: Sequence[str] = (), feedback_by_control: Dict[str, str] | None = None,
 ) -> List[Candidate]:
     """Generate candidates through a parallel LangGraph fan-out/fan-in graph."""
     if count < 1:
@@ -141,7 +155,9 @@ def generate_langgraph_candidates(
     graph.add_conditional_edges(START, _fan_out)
     graph.add_edge("generate_agent_candidates", END)
     compiled = graph.compile()
-    agents = min(agents, count)
+    if controls and (len(set(controls)) != len(controls) or len(controls) > count):
+        raise ValueError("Seeded LangGraph generation needs distinct controls and one slot per control")
+    agents = len(controls) if controls else min(agents, count)
     result = compiled.invoke(
         {
             "available": list(available),
@@ -149,6 +165,8 @@ def generate_langgraph_candidates(
             "model": model,
             "requested_count": count,
             "agent_count": agents,
+            "controls": list(controls),
+            "feedback_by_control": feedback_by_control or {},
             "candidate_payloads": [],
             "errors": [],
         },

@@ -113,6 +113,24 @@ class SearchTests(unittest.TestCase):
         folds[-1]["metrics"]["mean_daily_rank_ic"] = .02
         self.assertEqual(stable_horizons({"folds": folds}), [1])
 
+    def test_seeded_llm_keeps_controls_and_rejects_unrelated_components(self):
+        from miner_lite import candidate_from_dict, seeded_llm_candidates
+
+        base = Candidate("vol60", "feature", ("vol60",), "control")
+        valid = candidate_from_dict({
+            "candidate_id": "vol_smooth", "control_id": "vol60",
+            "expression": {"op": "ts_mean", "feature": "vol60", "window": 10},
+        })
+        invalid = Candidate("momentum", "feature", ("momentum",), "wrong family",
+                            control_id="vol60")
+        zscore = candidate_from_dict({
+            "candidate_id": "vol_zscore", "control_id": "vol60",
+            "expression": {"op": "ts_zscore", "feature": "vol60", "window": 10},
+        })
+        audit = []
+        self.assertEqual(seeded_llm_candidates([base], [invalid, zscore, valid], audit), [base, valid])
+        self.assertEqual([row["status"] for row in audit], ["rejected", "rejected", "evaluated"])
+
     def test_insufficient_sessions_fail(self):
         with self.assertRaises(ValueError):
             rolling_feedback(self.frame.iloc[:8], self.candidate, ["x"], self.targets, self.ends)
