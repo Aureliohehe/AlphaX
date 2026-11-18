@@ -89,6 +89,10 @@ def simulate_cn(signals, quotes, calendar, config, start, end):
         ranking = signal[np.isfinite(signal)].rename("prediction").reset_index()
         if not ranking.empty:
             ranking.columns = ["ticker", "prediction"]
+            # Rank composites can differ by a floating-point ULP after CSV
+            # roundtrips or summing identical components in a different order.
+            # Treat scores equal at 12 decimals as ties, resolved by ticker.
+            ranking["prediction"] = ranking["prediction"].round(12)
             ranking = ranking.sort_values(["prediction", "ticker"], ascending=[False, True])
         remaining = len(sessions) - day_index - 1
         winddown = remaining < liquidation_days
