@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from miner_lite import Candidate
-from miner_search import rolling_feedback, run_search
+from miner_search import changed_fields, rolling_feedback, run_search, validation_tasks
 
 
 class SearchTests(unittest.TestCase):
@@ -47,7 +47,49 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(audit["budget_spent"], 3)
         self.assertEqual(calls[0][1], [])
         self.assertEqual(calls[1][1][0]["expression"], self.candidate.expression)
+        self.assertEqual(calls[1][1][0]["next_validation_tasks"][0]["control_id"], "x")
         json.dumps(audit, allow_nan=False)
+
+    def test_diagnostics_assign_horizon_specific_followups(self):
+        tasks = validation_tasks({
+            "candidate_id": "control", "direction_changes": 0,
+            "folds": [
+                {"horizon": 1, "fold": 1, "failure_reasons": ["high_or_unknown_turnover"]},
+                {"horizon": 5, "fold": 1, "failure_reasons": ["low_coverage"]},
+                {"horizon": 5, "fold": 2, "failure_reasons": []},
+            ],
+        })
+        self.assertEqual([(t["horizon"], t["primary_metric"]) for t in tasks],
+                         [(1, "turnover"), (5, "coverage")])
+        self.assertEqual(tasks[1]["failing_folds"], [1])
+        self.assertEqual(tasks[1]["control_id"], "control")
+
+    def test_followup_rejects_two_edits_and_limits_the_lineage(self):
+        from miner_lite import candidate_from_dict
+
+        def candidate(cid, feature, window, parent=None):
+            return candidate_from_dict({
+                "candidate_id": cid, "hypothesis": "fixture", "control_id": parent,
+                "expression": {"op": "ts_mean", "feature": feature, "window": window},
+            })
+
+        root = candidate("root", "x5", 5)
+        two_edits = candidate("two_edits", "x10", 10, "root")
+        followup = candidate("followup", "x5", 10, "root")
+        retry = candidate("retry", "x5", 20, "followup")
+        disguised = candidate("disguised", "x10", 20)
+        fresh = candidate("fresh", "y", 20)
+        proposals = iter([[root], [two_edits, followup], [retry, disguised, fresh]])
+        frame = self.frame.assign(x5=self.frame.x, x10=self.frame.x, y=self.frame.x)
+        results, audit = run_search(lambda count, feedback: next(proposals), frame,
+                                    ["x5", "x10", "y"], self.targets, self.ends,
+                                    rounds=3, batch_size=3, budget=9)
+        self.assertEqual([c.candidate_id for c in results], ["root", "followup", "fresh"])
+        self.assertEqual(audit["rounds"][1]["rejected"][0]["ast_edits"], 2)
+        self.assertEqual([r["reason"] for r in audit["rounds"][2]["rejected"]],
+                         ["lineage_follow_up_limit_reached", "related_hypothesis_requires_control"])
+        self.assertIsNone(changed_fields({"op": "feature", "feature": "x"},
+                                         {"op": "rank", "input": {"op": "feature", "feature": "x"}}))
 
     def test_insufficient_sessions_fail(self):
         with self.assertRaises(ValueError):

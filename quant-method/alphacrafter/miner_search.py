@@ -1,6 +1,7 @@
 """Budgeted proposal feedback using training data only; never grants admission."""
 from dataclasses import asdict
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,59 @@ def rolling_feedback(frame, candidate, available, targets, label_ends, folds=3):
             "folds": records}
 
 
+def validation_tasks(report):
+    """Turn search-fold failures into controlled follow-up experiments."""
+    tasks = []
+    for horizon in sorted({fold["horizon"] for fold in report["folds"]}):
+        folds = [fold for fold in report["folds"] if fold["horizon"] == horizon]
+        failures = [fold for fold in folds if fold["failure_reasons"]]
+        reasons = {reason for fold in failures for reason in fold["failure_reasons"]}
+        if "low_coverage" in reasons:
+            action = "Simplify one input or operator to improve coverage"
+            metric = "coverage"
+        elif report["direction_changes"] or "unstable_daily_direction" in reasons:
+            action = "Test one longer lookback or smoothing window for directional stability"
+            metric = "rank_ic_hit_ratio"
+        elif "high_or_unknown_turnover" in reasons:
+            action = "Test one smoothing change to reduce rank turnover"
+            metric = "turnover"
+        elif failures:
+            action = "Test one economically motivated input substitution for stronger rank IC"
+            metric = "mean_daily_rank_ic"
+        else:
+            action = "Keep as a control for a distinct hypothesis"
+            metric = None
+        tasks.append({
+            "control_id": report["candidate_id"], "horizon": horizon,
+            "failing_folds": [fold["fold"] for fold in failures],
+            "action": action, "primary_metric": metric,
+            "comparison": "Compare to the unchanged control on the same folds with the existing thresholds",
+        })
+    return tasks
+
+
+def changed_fields(control, variant):
+    """Count scalar edits, or return None when the AST shape changes."""
+    if type(control) is not type(variant):
+        return None
+    if isinstance(control, dict):
+        if control.keys() != variant.keys():
+            return None
+        changes = [changed_fields(control[key], variant[key]) for key in control]
+    elif isinstance(control, list):
+        if len(control) != len(variant):
+            return None
+        changes = [changed_fields(left, right) for left, right in zip(control, variant)]
+    else:
+        return int(control != variant)
+    return None if None in changes else sum(changes)
+
+
+def feature_family(candidate):
+    """Treat different lookbacks of the same inputs as one research family."""
+    return frozenset(re.sub(r"\d+", "", feature) for feature in candidate.features)
+
+
 def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=40, batch_size=10, folds=3):
     """propose(count, feedback) returns safe candidates; every proposal consumes budget."""
     if min(rounds, budget, batch_size) < 1:
@@ -55,6 +109,9 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
     if folds < 2 or frame["date"].nunique() < (folds + 1) * 5:
         raise ValueError("Search needs >=2 folds and >=5 sessions per block")
     accepted, feedback, audit, seen, ids = [], [], [], set(), set()
+    from miner_lite import _candidate_expression_spec
+
+    history, families, used_lineages = {}, {}, set()
     spent = 0
     for round_index in range(rounds):
         count = min(batch_size, budget - spent)
@@ -65,21 +122,56 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
         spent += count
         if len(proposals) > count:
             proposals = proposals[:count]
-        current = []
+        current, rejected = [], []
+        prior = history.copy()
         for candidate in proposals:
-            if candidate.expression in seen or candidate.candidate_id in ids:
+            cid, parent = candidate.candidate_id, candidate.control_id
+            spec = _candidate_expression_spec(candidate)
+            family = feature_family(candidate)
+            edits = None
+            lineage = cid
+            reason = None
+            if candidate.expression in seen or cid in ids:
+                reason = "duplicate_id_or_expression"
+            elif parent is not None:
+                if parent not in prior:
+                    reason = "control_must_be_from_an_earlier_round"
+                else:
+                    control, lineage = prior[parent]
+                    edits = changed_fields(control, spec)
+                    if edits != 1:
+                        reason = "follow_up_must_change_exactly_one_ast_field"
+                    elif lineage in used_lineages:
+                        reason = "lineage_follow_up_limit_reached"
+                    elif family in families and families[family] != lineage:
+                        reason = "feature_family_already_in_another_lineage"
+            elif family in families:
+                reason = "related_hypothesis_requires_control"
+            if reason:
+                rejected.append({"candidate_id": cid, "control_id": parent,
+                                 "reason": reason, "ast_edits": edits})
                 continue
             seen.add(candidate.expression)
-            ids.add(candidate.candidate_id)
+            ids.add(cid)
+            history[cid] = (spec, lineage)
+            families[family] = lineage
+            if parent is not None:
+                used_lineages.add(lineage)
             accepted.append(candidate)
             report = rolling_feedback(frame, candidate, available, targets, label_ends, folds)
             # JSON nulls instead of NaN for absent diagnostic metrics.
             for fold in report["folds"]:
                 fold["metrics"] = {k: v if np.isfinite(v) else None for k, v in fold["metrics"].items()}
             report["round"] = round_index + 1
+            report["control_id"] = parent
+            report["lineage_id"] = lineage
+            report["expression_ast"] = spec
+            report["next_validation_tasks"] = validation_tasks(report)
             current.append(report)
         feedback.extend(current)
+        for report in feedback:
+            report["lineage_followup_used"] = report["lineage_id"] in used_lineages
         audit.append({"round": round_index + 1, "requested": count, "returned": len(proposals),
-                      "unique": len(current), "budget_spent": spent})
+                      "unique": len(current), "rejected": rejected, "budget_spent": spent})
     return accepted, {"scope": "training_only_research_not_admission", "budget": budget,
                       "budget_spent": spent, "rounds": audit, "candidates": feedback}

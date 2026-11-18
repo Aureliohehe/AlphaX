@@ -123,6 +123,7 @@ class Candidate:
     features: Tuple[str, ...]
     hypothesis: str
     expression_spec: Optional[Dict[str, object]] = None
+    control_id: Optional[str] = None
 
     @property
     def expression(self) -> str:
@@ -422,12 +423,16 @@ def candidate_from_dict(value: Dict[str, object]) -> Candidate:
         features_value = list(expression_features(expression_spec))
     if not isinstance(features_value, list) or not all(isinstance(x, str) for x in features_value):
         raise ValueError("candidate.features must be a list of strings")
+    control_id = value.get("control_id")
+    if control_id is not None and (not isinstance(control_id, str) or not control_id.strip()):
+        raise ValueError("control_id must be a nonempty string or null")
     candidate = Candidate(
         candidate_id=str(value.get("candidate_id", value.get("id", ""))),
         op=op,
         features=tuple(features_value),
         hypothesis=str(value.get("hypothesis", "")),
         expression_spec=expression_spec,
+        control_id=control_id,
     )
     validate_candidate(candidate)
     return candidate
@@ -1290,7 +1295,7 @@ def main() -> None:
     )
     parser.add_argument("--llm-count", type=int, default=40)
     parser.add_argument("--search-rounds", type=int, default=1,
-                        help="Opt-in training-only feedback search; >1 requires direct LLM backend")
+                        help="Opt-in training-only feedback search; >1 requires an LLM backend")
     parser.add_argument("--search-budget", type=int, default=40, help="Total proposal slots across feedback rounds")
     parser.add_argument("--search-batch-size", type=int, default=10)
     parser.add_argument("--search-folds", type=int, default=3)
@@ -1370,8 +1375,8 @@ def main() -> None:
     args = parser.parse_args()
     if min(args.search_rounds, args.search_budget, args.search_batch_size) < 1 or args.search_folds < 2:
         parser.error("Search budgets/rounds must be positive and folds >=2")
-    if args.search_rounds > 1 and (not args.llm_model or args.candidate_file or args.llm_orchestrator != "direct"):
-        parser.error("Feedback search requires --llm-model, direct backend and no --candidate-file")
+    if args.search_rounds > 1 and (not args.llm_model or args.candidate_file):
+        parser.error("Feedback search requires --llm-model and no --candidate-file")
     if args.maintenance_interval_days < 1:
         parser.error("--maintenance-interval-days must be positive")
     registry_path = args.registry or args.output_dir / "registry.json"
@@ -1484,9 +1489,21 @@ def main() -> None:
 
             def propose(count, feedback):
                 context = market_context + "\nTraining-only research feedback: " + feedback
-                context += ("\nImprove weak hypotheses using these diagnostics. Avoid previously proposed expressions "
-                            "and IDs. These folds are search data, not independent validation. "
-                            "Return at most the requested number of proposals.")
+                context += (
+                    "\nInclude control_id in each candidate object. For a follow-up set it to a prior "
+                    "candidate_id and change exactly one AST scalar (one feature, operator, or parameter "
+                    "with the AST shape unchanged). Each research lineage gets at most one follow-up. "
+                    "Use lineage_followup_used to identify closed lineages. For a genuinely new "
+                    "hypothesis set control_id to null and use a different set of feature families "
+                    "(lookback numbers do not define new families). Use next_validation_tasks to choose "
+                    "a follow-up metric and state it in the hypothesis. The folds are training search "
+                    "data. Return at most the requested number of proposals."
+                )
+                if args.llm_orchestrator == "langgraph":
+                    from langgraph_miner import generate_langgraph_candidates
+
+                    return generate_langgraph_candidates(args.llm_model, available, context, count,
+                                                         args.llm_agents)
                 return generate_llm_candidate_cluster(args.llm_model, available, context, count,
                                                       min(args.llm_agents, count), audit=llm_candidate_audit,
                                                       strict_budget=True)
@@ -1496,7 +1513,7 @@ def main() -> None:
                 rounds=args.search_rounds, budget=args.search_budget,
                 batch_size=args.search_batch_size, folds=args.search_folds,
             )
-            generator = f"llm_feedback_search:{args.llm_model}"
+            generator = f"llm_feedback_search:{args.llm_model}:{args.llm_orchestrator}"
         elif args.llm_orchestrator == "langgraph":
             try:
                 from langgraph_miner import generate_langgraph_candidates

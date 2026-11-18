@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import operator
-from math import ceil
 from typing import Dict, List, Sequence
 
 from typing_extensions import Annotated, TypedDict
@@ -46,6 +45,7 @@ def _candidate_payload(candidate: Candidate) -> Dict[str, object]:
         "op": candidate.op,
         "features": list(candidate.features),
         "hypothesis": candidate.hypothesis,
+        "control_id": candidate.control_id,
     }
     if candidate.expression_spec is not None:
         payload["expression"] = candidate.expression_spec
@@ -56,7 +56,7 @@ def _fan_out(state: MinerGraphState):
     """Create one Send task per specialist; Send tasks run in one graph step."""
     roles = list(MINER_AGENT_ROLES)
     agent_count = max(1, int(state.get("agent_count", len(roles))))
-    per_agent_count = int(state.get("per_agent_count", 1))
+    slots, remainder = divmod(state["requested_count"], agent_count)
     return [
         Send(
             "generate_agent_candidates",
@@ -64,7 +64,7 @@ def _fan_out(state: MinerGraphState):
                 "available": state["available"],
                 "market_context": state["market_context"],
                 "model": state["model"],
-                "per_agent_count": per_agent_count,
+                "per_agent_count": slots + int(index < remainder),
                 "role": roles[index % len(roles)],
             },
         )
@@ -141,7 +141,7 @@ def generate_langgraph_candidates(
     graph.add_conditional_edges(START, _fan_out)
     graph.add_edge("generate_agent_candidates", END)
     compiled = graph.compile()
-    per_agent_count = max(1, int(ceil(count / agents)))
+    agents = min(agents, count)
     result = compiled.invoke(
         {
             "available": list(available),
@@ -149,7 +149,6 @@ def generate_langgraph_candidates(
             "model": model,
             "requested_count": count,
             "agent_count": agents,
-            "per_agent_count": per_agent_count,
             "candidate_payloads": [],
             "errors": [],
         },
