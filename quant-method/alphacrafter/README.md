@@ -319,6 +319,22 @@ python3 quant-method/alphacrafter/run_four_factor_template_research.py \
 
 频率入口只从 Miner 的 candidates.json 和 registry.json 接收候选，支持 JSON、模板和 LLM 三种来源。候选用各频率的标签独立重评，Miner 旧的短周期入库结论不作为周频或月频准入。Python 量价字段可作为候选的输入。若表达式使用额外字段，通过 --feature-panel 提供按交易日和股票代码对齐的特征。历史实跑文件保留原命令和来源。
 
+### 周频四因子 XGBoost 对照
+
+在沪深 300 频率研究中，可启用 XGBoost 作为备选打分器。运行前准备包含四个固定核心因子的 Miner 输出，并在当前 Python 环境安装 `xgboost`。
+
+```bash
+python -m pip install xgboost
+python quant-method/alphacrafter/run_medium_frequency.py \
+  --miner-dir "path/to/miner-result" \
+  --evaluate-strategies --compare-weekly-xgboost \
+  --output-dir "quant-method/machine-learn/data/qlib/weekly_xgboost_first_run"
+```
+
+模型使用 2019–2021 年已兑现的 5 个交易日开盘到开盘标签训练，参数固定为 25 棵树。等权和 XGBoost 使用同一组因子、同一周频成交配置，以及标准和双倍佣金及滑点。查看 `summary.json` 的 `weekly_xgboost_comparison`，其中包含两种打分器的收益、回撤、换手和同期沪深 300 价格指数收益。模型及训练配置写入 `weekly_xgboost.ubj` 和 `weekly_xgboost_model.json`。
+
+此对照只评估已观察过的 2022–2023 年窗口。XGBoost 结果用于研究诊断，现有 Trader 准入继续按原规则执行。
+
 ### 组合指标初筛
 
 `run_combination_metrics.py` 从 Miner 输出读取四因子核心及带 `control_id` 的替换候选，并使用频率研究产出的特征和开盘到开盘标签。它用原组合和每个单项替换做配对比较，分别输出组合 Rank IC、Rank ICIR、滚动窗口胜数、前 30 名最差一成持有收益、名单更换和覆盖率。前 30 名只按信号排，若有任一股票缺少已成熟收益，该日不进入配对持有收益统计。日、周、月以 1、5、20 个交易日分别采样。该入口不模拟成交，也不写入交易准入结果。

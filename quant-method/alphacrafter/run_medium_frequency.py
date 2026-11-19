@@ -20,6 +20,7 @@ from temporal import is_feature_column
 from trader_harness import (WEEKLY_COMBINATION_RISK, frequency_presets, requires_weekly_stress,
                             select_frequency, strategy_is_feasible)
 from trader_lite import file_fingerprint, summarize
+from weekly_xgboost import fit_weekly_scorer
 
 HERE = Path(__file__).resolve().parent
 ML = HERE.parent / "machine-learn"
@@ -47,6 +48,7 @@ def miner_candidate_source(directory, cutoff):
 
 
 CORE_PATH = HERE / "candidates_four_factor_core_v1.json"
+WEEKLY_XGB_ID = "core4_xgboost"
 WEEKLY_COMBINATION_WINDOWS = {"train": ("2019-01-01", "2020-12-31"),
                               "validation": ("2021-01-01", "2021-12-31")}
 WEEKLY_COMBINATION_RESEARCH = replace(HORIZON_RESEARCH_POLICIES[5], min_rank_icir=.09)
@@ -131,7 +133,16 @@ def main():
     parser.add_argument("--miner-dir", type=Path, required=True, help="Completed Miner directory with candidates.json and registry.json")
     parser.add_argument("--feature-panel", type=Path, help="Date/ticker feature panel for Miner expressions using additional input columns")
     parser.add_argument("--evaluate-strategies", action="store_true", help="Compare daily/weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
+    parser.add_argument("--compare-weekly-xgboost", action="store_true",
+                        help="Compare frozen XGBoost and equal-weight scores on the same four weekly factors")
     args = parser.parse_args()
+    if args.compare_weekly_xgboost and not args.evaluate_strategies:
+        parser.error("--compare-weekly-xgboost requires --evaluate-strategies")
+    if args.compare_weekly_xgboost:
+        try:
+            import xgboost  # noqa: F401
+        except ImportError as exc:
+            parser.error(f"Install xgboost for --compare-weekly-xgboost: {exc}")
     out = args.output_dir.resolve()
     if out.exists():
         parser.error("Use a new output directory")
@@ -163,6 +174,8 @@ def main():
               HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "trader_harness.py",
               HERE / "run_cn_portfolio_research.py"]
     inputs.extend([candidate_path, registry_path, CORE_PATH, HERE / "run_combination_metrics.py"])
+    if args.compare_weekly_xgboost:
+        inputs.append(HERE / "weekly_xgboost.py")
     if args.feature_panel:
         inputs.append(args.feature_panel)
     hashes = {str(p): file_fingerprint(p) for p in inputs}
@@ -278,12 +291,25 @@ def main():
                                             "risk_thresholds_both_costs": WEEKLY_COMBINATION_RISK,
                                             "calibrated_on_observed_data": True}})
         trials = []
+        weekly_comparison = None
         if args.evaluate_strategies:
             write("status.json", {"status": "evaluating_frozen_strategy_iterations"})
             start, end = manifest["strategy_iteration"]
             previous = calendar[calendar.get_loc(first_execution) - 1]
+            if args.compare_weekly_xgboost:
+                core = next((item for item in combinations
+                             if item["horizon"] == 5 and item["strategy_id"] == "core4"), None)
+                if core is None:
+                    raise ValueError("The weekly XGBoost comparison requires all four frozen core factors in the Miner inventory")
+                columns = [score_columns[name] for name in core["members"]]
+                scores, model, details = fit_weekly_scorer(frame, columns, previous, end)
+                model.save_model(out / "weekly_xgboost.ubj")
+                write("weekly_xgboost_model.json", {**details, "members": dict(zip(columns, core["members"])),
+                                                   "model": file_fingerprint(out / "weekly_xgboost.ubj")})
+                weekly_comparison = {"window": [start, end], "models": {}}
             for h, config in presets.items():
                 strategies = []
+                diagnostics = set()
                 if pool["candidates_by_horizon"][str(h)]:
                     signals, selections = screen_signals(frame, pool, h, calendar, first_execution, start, end)
                     if not signals.empty and np.isfinite(signals.prediction).any():
@@ -297,6 +323,15 @@ def main():
                     signals = frame.loc[mask, ["date", "ticker"]].assign(prediction=combination_scores[name].loc[mask])
                     if np.isfinite(signals.prediction).any():
                         strategies.append((name, item["members"], signals))
+                if h == 5 and weekly_comparison is not None:
+                    mask = anchor_mask(frame.date, calendar, first_execution, h) & frame.date.between(previous, end)
+                    weekly = frame.loc[mask, ["date", "ticker"]]
+                    if not any(name == "core4" for name, _, _ in strategies):
+                        diagnostics.add("core4")
+                        strategies.append(("core4", core["members"],
+                                           weekly.assign(prediction=combination_scores["core4"].loc[mask])))
+                    diagnostics.add(WEEKLY_XGB_ID)
+                    strategies.append((WEEKLY_XGB_ID, core["members"], weekly.assign(prediction=scores.reindex(weekly.index))))
                 if not strategies:
                     trials.append({"horizon": h, "status": "not_run_no_research_signals"})
                     continue
@@ -316,7 +351,16 @@ def main():
                         stressed.to_csv(out / f"returns_{tag}_double_cost.csv")
                         trial["double_cost"] = {**summarize(stressed, 1_000_000., annual_risk_free_rate=0.),
                                                 "execution_audit": stress_audit}
-                    trial["status"] = "feasible_in_proxy" if strategy_is_feasible(trial) else "not_feasible"
+                    if name in diagnostics:
+                        trial["status"] = "diagnostic_only"
+                    else:
+                        trial["status"] = "feasible_in_proxy" if strategy_is_feasible(trial) else "not_feasible"
+                    if h == 5 and weekly_comparison is not None and name in {"core4", WEEKLY_XGB_ID}:
+                        weekly_comparison["models"][name] = {
+                            **{key: trial[key] for key in ("cumulative_return", "max_drawdown", "sharpe", "mean_daily_turnover")},
+                            "double_cost_cumulative_return": trial["double_cost"]["cumulative_return"],
+                        }
+                        weekly_comparison["csi300_price_index_return"] = float((1 + report.benchmark_return).prod() - 1)
                     trials.append(trial)
                     report.to_csv(out / f"returns_{tag}.csv")
                     trades.to_csv(out / f"trades_{tag}.csv", index=False)
@@ -326,6 +370,8 @@ def main():
                 raise ValueError("Input/code changed: " + p)
         summary = {"research_eligible": pool["eligible_counts"], "eligible_combinations": pool["combinations_by_horizon"], "strategies": trials, "holdout_evaluated": False,
                    "strategy_window_is_previously_examined": True, "scope": manifest["scope"]}
+        if weekly_comparison is not None:
+            summary["weekly_xgboost_comparison"] = weekly_comparison
         selection = select_frequency(trials, manifest["strategy_iteration"], evaluated=args.evaluate_strategies)
         write("strategy_selection.json", {**selection, "market": "cn", "label_mode": pool["label_mode"],
                                            "frozen_as_of": manifest["strategy_iteration"][1],
