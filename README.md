@@ -1,12 +1,11 @@
 # AlphaX
 
-AlphaX 是一个量化研究项目，提供因子发掘、按历史时点筛选信号、策略验证和组合回测。首次使用可以从 S&P 500 的模板因子流水线开始，跑通后再启用 LLM 或训练 Qlib 模型基线。
+AlphaX 是一个面向量化研究的多 Agent 项目。Miner 提出并验证候选因子，Screener 按历史时点筛选因子并生成股票评分，Trader 验证策略并回测。首次使用可以先跑通 S&P 500 的模板因子流水线，再启用 LangGraph 和 LLM 生成因子。
 
 | 想做什么 | 入口 | 所需输入 |
 | --- | --- | --- |
 | 跑 Miner → Screener → Trader | `run_pipeline.py` | S&P 500 特征面板和交易日历 |
 | 用 LLM 挖因子 | `miner_lite.py` | 特征面板、LangGraph 和模型 API 密钥 |
-| 训练 XGBoost 并回测组合 | `train_xgboost_qlib.py`、`qlib_portfolio_backtest.py` | S&P 500 行情与特征面板 |
 | 重放沪深 300 四因子实验 | `run_frozen_positive_holdout.py` | 沪深 300 行情、历史成分、交易日历及实验所需的缓存 |
 
 ## 1. 配置环境
@@ -99,23 +98,6 @@ python "$AC/miner_lite.py" \
 
 结果见 `candidate_metrics.csv`、`accepted_factors.json` 和 `llm_candidate_audit.json`。使用外部因子研究 skill 时，加上 `--llm-factor-mine-skill-dir <本地检出目录>`。如需让滚动流水线评估 LLM 候选，可用 `--candidate-file` 传入在实验窗口开始前已确定的候选；对今天生成的历史候选，应按回顾性研究解读。[Miner、反馈搜索与 skill 配置](quant-method/alphacrafter/README.md)
 
-### 训练 Qlib/XGBoost 基线并回测
-
-```bash
-python -m pip install -r "$ML/requirements.txt"
-
-python "$ML/train_xgboost_qlib.py" \
-  --input "$PANEL" \
-  --output-dir "$ML/data/qlib/xgboost_baseline"
-
-python "$ML/qlib_portfolio_backtest.py" \
-  --predictions "$ML/data/qlib/xgboost_baseline/predictions.csv" \
-  --output-dir "$ML/data/qlib/portfolio_backtest_model_drop10" \
-  --n-drop 10
-```
-
-首次回测会根据 S&P 500 原始行情构建本地 Qlib 数据。模型输入、训练窗口和组合配置见[模型基线指南](quant-method/machine-learn/README.md)。
-
 ### 重放沪深 300 四因子实验
 
 沪深 300 研究使用独立的数据和交易模拟。先按审计说明确认本地行情、历史成分和交易日历可用，再按留出期报告准备依赖和运行 `run_frozen_positive_holdout.py`。[沪深 300 数据审计](docs/alphacrafter/CSI300_DATA_AUDIT.md) · [四因子留出回放及产物](docs/alphacrafter/POSITIVE_HOLDOUT.md)
@@ -125,7 +107,7 @@ python "$ML/qlib_portfolio_backtest.py" \
 | 路径 | 内容 |
 | --- | --- |
 | [quant-method/alphacrafter/](quant-method/alphacrafter/) | Miner、Screener、Trader、运行入口和因子预设 |
-| [quant-method/machine-learn/](quant-method/machine-learn/) | 数据准备、特征工程、Qlib 模型和组合回测 |
+| [quant-method/machine-learn/](quant-method/machine-learn/) | 行情下载、特征工程和本地数据目录 |
 | [docs/](docs/) | 架构、数据审计和历史实验报告 |
 
 数据流、时点控制和各研究分支的关系见[架构说明](docs/ARCHITECTURE.md)。
