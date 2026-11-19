@@ -159,7 +159,7 @@ class SearchTests(unittest.TestCase):
 
     def test_cli_passes_only_training_rows_to_search(self):
         from miner_lite import main
-        from test_temporal import fixture_panel
+        from .test_temporal import fixture_panel
         from miner_search import run_search as real_search
         panel = fixture_panel(100)
         sessions = sorted(panel.date.unique())

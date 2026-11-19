@@ -1,22 +1,22 @@
 # AlphaCrafter 复现工程
 
-已完成[冻结配置的正收益留出验证](POSITIVE_HOLDOUT.md)：四因子、30 只股票、周频调仓策略在 2024–2025 留出期扣费累计 **+28.87%**，两倍佣金及滑点下 **+28.09%**，两个年度均为正；141 项测试通过。最大回撤 -8.27%，仍未通过原 -8% 正式策略门槛；研究收益转正不代表论文复现或实盘认证。该留出期现已被观察，后续调参须另设独立检验。
+已完成[冻结配置的正收益留出验证](../../docs/alphacrafter/POSITIVE_HOLDOUT.md)：四因子、30 只股票、周频调仓策略在 2024–2025 留出期扣费累计 **+28.87%**，两倍佣金及滑点下 **+28.09%**，两个年度均为正；141 项测试通过。最大回撤 -8.27%，仍未通过原 -8% 正式策略门槛；研究收益转正不代表论文复现或实盘认证。该留出期现已被观察，后续调参须另设独立检验。
 
-新增[固定组合与绝对趋势对照](SIGNAL_STABILITY.md)：18 条开发期路径中，固定四因子标准成本累计 +5.22%；绝对趋势过滤的 15 只版本为 +6.67%，两倍成本 +7.28%。年度亏损和策略门槛问题仍未解决，未评估留出。另修复了近并列分数的浮点排序不稳定问题，137 项测试通过。
+新增[固定组合与绝对趋势对照](../../docs/alphacrafter/SIGNAL_STABILITY.md)：18 条开发期路径中，固定四因子标准成本累计 +5.22%；绝对趋势过滤的 15 只版本为 +6.67%，两倍成本 +7.28%。年度亏损和策略门槛问题仍未解决，未评估留出。另修复了近并列分数的浮点排序不稳定问题，137 项测试通过。
 
-新增[正收益配置成本复核](POSITIVE_ROBUSTNESS.md)：修复排序后，周频剔除反转组在标准/两倍/三倍佣金与滑点下，开发期扣费累计为 +3.42%/+1.48%/-0.94%；2022 年均亏损，仍未通过策略门槛，未评估留出。
+新增[正收益配置成本复核](../../docs/alphacrafter/POSITIVE_ROBUSTNESS.md)：修复排序后，周频剔除反转组在标准/两倍/三倍佣金与滑点下，开发期扣费累计为 +3.42%/+1.48%/-0.94%；2022 年均亏损，仍未通过策略门槛，未评估留出。
 
-当前表达式和评价口径已统一，见 [表达式语义](EXPRESSION_SEMANTICS.md)：普通 JSON 与 AST 均按原始字段求值，只有显式 `rank` 才在表达式内部排名；IC 评价表达式输出，组合前再统一排名。旧版库和快照需在新实验目录重建，历史结果没有自动重算。
+当前表达式和评价口径已统一，见 [表达式语义](../../docs/alphacrafter/EXPRESSION_SEMANTICS.md)：普通 JSON 与 AST 均按原始字段求值，只有显式 `rank` 才在表达式内部排名；IC 评价表达式输出，组合前再统一排名。旧版库和快照需在新实验目录重建，历史结果没有自动重算。
 
-后续[仓位与因子组诊断](MEDIUM_FREQUENCY_ATTRIBUTION.md)完成 10 组开发期对照：补仓至日均约 77%–79% 后，5/20 日全因子扣费累计为 -10.39%/-7.50%；周频剔除反转组为 +3.42%，但年化仅 1.76%，所有配置仍未通过策略门槛。未评估留出。
+后续[仓位与因子组诊断](../../docs/alphacrafter/MEDIUM_FREQUENCY_ATTRIBUTION.md)完成 10 组开发期对照：补仓至日均约 77%–79% 后，5/20 日全因子扣费累计为 -10.39%/-7.50%；周频剔除反转组为 +3.42%，但年化仅 1.76%，所有配置仍未通过策略门槛。未评估留出。
 
-已重跑[中低频收益测试](MEDIUM_FREQUENCY_RETURNS.md)：严格准入仍无候选；额外绕过准入的 12 因子探索性诊断，在已研究的 2022–2023 窗口，5/20 日调仓扣费累计收益分别为 -6.75%/-6.58%，均未通过策略门槛，未评估 2024–2025 留出。
+已重跑[中低频收益测试](../../docs/alphacrafter/MEDIUM_FREQUENCY_RETURNS.md)：严格准入仍无候选；额外绕过准入的 12 因子探索性诊断，在已研究的 2022–2023 窗口，5/20 日调仓扣费累计收益分别为 -6.75%/-6.58%，均未通过策略门槛，未评估 2024–2025 留出。
 
-新增 [中低频因子与策略 Harness](MEDIUM_FREQUENCY.md)：5/20 日开盘到开盘标签、12 个中长期候选、同周期成熟标签筛选，以及调仓间隔、最短持仓、排名缓冲、每日换手和费用预算。首轮真实研究池均无通过者，未强行生成策略收益，2024–2025 留出未评估。
+新增 [中低频因子与策略 Harness](../../docs/alphacrafter/MEDIUM_FREQUENCY.md)：5/20 日开盘到开盘标签、12 个中长期候选、同周期成熟标签筛选，以及调仓间隔、最短持仓、排名缓冲、每日换手和费用预算。首轮真实研究池均无通过者，未强行生成策略收益，2024–2025 留出未评估。
 
-已新增 [两层准入](TWO_LAYER_ADMISSION.md)：按周期筛选研究候选，再对冻结的组合做独立策略验证。CSI300 当前进入 1 日研究池 13 个、5 日 0 个；[跨日组合收益测试](CSI300_PORTFOLIO_EXPERIMENT.md)的三个配置在 2022–2023 验证期扣费亏损，均未通过，未评估 2024–2025 留出收益。原严格论文对照结果保持不变。
+已新增 [两层准入](../../docs/alphacrafter/TWO_LAYER_ADMISSION.md)：按周期筛选研究候选，再对冻结的组合做独立策略验证。CSI300 当前进入 1 日研究池 13 个、5 日 0 个；[跨日组合收益测试](../../docs/alphacrafter/CSI300_PORTFOLIO_EXPERIMENT.md)的三个配置在 2022–2023 验证期扣费亏损，均未通过，未评估 2024–2025 留出收益。原严格论文对照结果保持不变。
 
-**当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](REPRODUCTION_STATUS.md)。固定三因子的准入失败明细见 [`GATE_DIAGNOSIS.md`](GATE_DIAGNOSIS.md)，后续固定十二个技术候选的探索性结果见 [`CANDIDATE_EXPLORATION.md`](CANDIDATE_EXPLORATION.md)，论文指标/标签口径对照见 [`METRIC_AUDIT.md`](METRIC_AUDIT.md)，raw 与 RankNorm 的配对量化见 [`RANKNORM_AUDIT.md`](RANKNORM_AUDIT.md)，Qlib Alpha158 候选与 GitHub 调研见 [`ALPHA158_PRESET_REVIEW.md`](ALPHA158_PRESET_REVIEW.md)，严格单因子与固定 XGBoost 模型两条探索路线见 [`TWO_TRACK_EXPERIMENT.md`](TWO_TRACK_EXPERIMENT.md)，数据时点/独立日历障碍见 [`DATA_PROVENANCE_AUDIT.md`](DATA_PROVENANCE_AUDIT.md)；严格实验仍未产生可行策略；另有明确降低准入门槛、已跑出模拟持仓但**不能当作论文或实盘收益**的 LLM Agent 执行演示，见 [`AGENT_EXECUTION_DEMO.md`](AGENT_EXECUTION_DEMO.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](TEMPORAL_REPLAY.md)。
+**当前状态：部分流程实现，尚未复现论文收益。** 论文对齐审计、严格 Trader 诊断结果和后续优先级见 [`REPRODUCTION_STATUS.md`](../../docs/alphacrafter/REPRODUCTION_STATUS.md)。固定三因子的准入失败明细见 [`GATE_DIAGNOSIS.md`](../../docs/alphacrafter/GATE_DIAGNOSIS.md)，后续固定十二个技术候选的探索性结果见 [`CANDIDATE_EXPLORATION.md`](../../docs/alphacrafter/CANDIDATE_EXPLORATION.md)，论文指标/标签口径对照见 [`METRIC_AUDIT.md`](../../docs/alphacrafter/METRIC_AUDIT.md)，raw 与 RankNorm 的配对量化见 [`RANKNORM_AUDIT.md`](../../docs/alphacrafter/RANKNORM_AUDIT.md)，Qlib Alpha158 候选与 GitHub 调研见 [`ALPHA158_PRESET_REVIEW.md`](../../docs/alphacrafter/ALPHA158_PRESET_REVIEW.md)，严格单因子与固定 XGBoost 模型两条探索路线见 [`TWO_TRACK_EXPERIMENT.md`](../../docs/alphacrafter/TWO_TRACK_EXPERIMENT.md)，数据时点/独立日历障碍见 [`DATA_PROVENANCE_AUDIT.md`](../../docs/alphacrafter/DATA_PROVENANCE_AUDIT.md)；严格实验仍未产生可行策略；另有明确降低准入门槛、已跑出模拟持仓但**不能当作论文或实盘收益**的 LLM Agent 执行演示，见 [`AGENT_EXECUTION_DEMO.md`](../../docs/alphacrafter/AGENT_EXECUTION_DEMO.md)。下文旧实验数字保留作历史记录，不代表修正后的严格口径结果。新的时间隔离、不可覆盖快照与历史回放用法见 [`TEMPORAL_REPLAY.md`](../../docs/alphacrafter/TEMPORAL_REPLAY.md)。
 
 Miner Harness 不依赖 LLM 即可运行：
 
@@ -29,11 +29,11 @@ Miner Harness 不依赖 LLM 即可运行：
 
 ## 固定预算批量候选研究
 
-`run_candidate_batch.py` 将已冻结的 12 个 LLM 提案与确定性技术候选按结构去重、受预算约束，逐项报告严格准入失败原因，并在**同一个历史准入窗口**做扣费模拟诊断；不会把事后生成的候选输出为历史可交易快照。已运行 32 候选研究实验，严格通过 0 个；命令和限制见 [`CANDIDATE_BATCH.md`](CANDIDATE_BATCH.md)。对其中 12 个冻结 LLM 因子的放宽准入敏感性实验见 [`LLM_GATE_SWEEP.md`](LLM_GATE_SWEEP.md)：仅 1 日弱正值准入能进 1 个，同时保留 1/5 日须把命中率降至 >49% 才进 1 个。进一步的 101 级连续放宽轨迹已让 12/12 全部进入**回溯研究名单**，但终点必须允许负 IC/ICIR 和仅约 43% 的方向命中，故不能当作有效准入规则。以上都不是新样本外收益，也不改变下述严格流程。阶梯各因子集合在已看过的 2023 历史窗口逐个运行 Screener 和本地 Trader 的扣费对比见 [`GATE_LADDER_COMPARISON.md`](GATE_LADDER_COMPARISON.md)；历史最高收益不能据此选择有效门槛。
+`run_candidate_batch.py` 将已冻结的 12 个 LLM 提案与确定性技术候选按结构去重、受预算约束，逐项报告严格准入失败原因，并在**同一个历史准入窗口**做扣费模拟诊断；不会把事后生成的候选输出为历史可交易快照。已运行 32 候选研究实验，严格通过 0 个；命令和限制见 [`CANDIDATE_BATCH.md`](../../docs/alphacrafter/CANDIDATE_BATCH.md)。对其中 12 个冻结 LLM 因子的放宽准入敏感性实验见 [`LLM_GATE_SWEEP.md`](../../docs/alphacrafter/LLM_GATE_SWEEP.md)：仅 1 日弱正值准入能进 1 个，同时保留 1/5 日须把命中率降至 >49% 才进 1 个。进一步的 101 级连续放宽轨迹已让 12/12 全部进入**回溯研究名单**，但终点必须允许负 IC/ICIR 和仅约 43% 的方向命中，故不能当作有效准入规则。以上都不是新样本外收益，也不改变下述严格流程。阶梯各因子集合在已看过的 2023 历史窗口逐个运行 Screener 和本地 Trader 的扣费对比见 [`GATE_LADDER_COMPARISON.md`](../../docs/alphacrafter/GATE_LADDER_COMPARISON.md)；历史最高收益不能据此选择有效门槛。
 
 ## 自动滚动实验
 
-`run_pipeline.py` 已串起按日期维护 Miner、Screener 历史回放、独立 Trader 验证和冻结后的留出评估，详见 [`PIPELINE.md`](PIPELINE.md)。先检查计划：
+`run_pipeline.py` 已串起按日期维护 Miner、Screener 历史回放、独立 Trader 验证和冻结后的留出评估，详见 [`PIPELINE.md`](../../docs/alphacrafter/PIPELINE.md)。先检查计划：
 
 ```bash
 python3 quant-method/alphacrafter/run_pipeline.py \
@@ -97,15 +97,15 @@ conda run -n tradingagents python quant-method/machine-learn/qlib_portfolio_back
 
 结果写入 `portfolio_backtest_miner_lite_drop10/`。当前留出回测累计收益 **26.53%**、年化收益 **11.61%**、Sharpe **0.61**、最大回撤 **-24.91%**；相对同口径等权基准低 **13.72 个百分点**。Miner 和 Screener 默认使用 `target_open_close`（T+1 开盘到收盘）进行因子评估，和 Trader 的执行时点一致；旧版特征文件会明确回退到 close-to-close 标签。
 
-已进一步完成嵌套滚动因子准入：训练集确定方向，前一年度验证集选择因子数量和净收益，后续年度只做前向评估，结果见 [`MINER_WALK_FORWARD.md`](MINER_WALK_FORWARD.md)。滚动版本最终留出收益为 **25.55%**，相对基准低 **14.69 个百分点**，暂不建议启用 Miner-lite 作为默认策略。
+已进一步完成嵌套滚动因子准入：训练集确定方向，前一年度验证集选择因子数量和净收益，后续年度只做前向评估，结果见 [`MINER_WALK_FORWARD.md`](../../docs/alphacrafter/MINER_WALK_FORWARD.md)。滚动版本最终留出收益为 **25.55%**，相对基准低 **14.69 个百分点**，暂不建议启用 Miner-lite 作为默认策略。
 
 ## 接入未来 LLM Miner
 
 ### 训练内反馈搜索（可选）
 
-首轮真实 DeepSeek 实验已完成：30 提案、28 唯一候选、严格准入 0 个，见 [反馈搜索实验报告](FEEDBACK_SEARCH_EXPERIMENT.md)。
+首轮真实 DeepSeek 实验已完成：30 提案、28 唯一候选、严格准入 0 个，见 [反馈搜索实验报告](../../docs/alphacrafter/FEEDBACK_SEARCH_EXPERIMENT.md)。
 
-新增 CSI300 数据测试：52 个单字段因子 + 28 个冻结 LLM 组合，2010–2018 训练、2019–2021 准入，严格通过 0/80；有局部短期排序信号，2022–2025 留出指标未计算。见 [CSI300 因子测试](CSI300_FACTOR_EXPERIMENT.md) 和 [数据审计](CSI300_DATA_AUDIT.md)。
+新增 CSI300 数据测试：52 个单字段因子 + 28 个冻结 LLM 组合，2010–2018 训练、2019–2021 准入，严格通过 0/80；有局部短期排序信号，2022–2025 留出指标未计算。见 [CSI300 因子测试](../../docs/alphacrafter/CSI300_FACTOR_EXPERIMENT.md) 和 [数据审计](../../docs/alphacrafter/CSI300_DATA_AUDIT.md)。
 
 默认仍为单轮生成。增加 `--search-rounds` 可启用有限预算的研究闭环：
 

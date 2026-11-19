@@ -153,7 +153,7 @@ class TraderTests(unittest.TestCase):
             loaded = load_inputs(predictions, features)
             self.assertEqual(loaded["execution_date"].iloc[0], pd.Timestamp("2023-12-29"))
             subprocess.run([
-                sys.executable, str(Path(__file__).with_name("trader_lite.py")),
+                sys.executable, str(Path(__file__).resolve().parents[1].joinpath("trader_lite.py")),
                 "--input", str(features), "--predictions", str(predictions),
                 "--output-dir", str(root / "out"), "--configs", ".8,0,1,1",
                 "--backtest-end", "2024-12-31",

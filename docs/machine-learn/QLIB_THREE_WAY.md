@@ -1,6 +1,6 @@
 # Qlib 行情 + 三组固定模型／组合回测（回溯实验）
 
-借鉴 [QuantaAlpha](https://github.com/QuantaAlpha/QuantaAlpha/blob/main/README.md) 的 **官方因子／自定义因子／合并因子** 对照，而不是复制论文或该仓库的模型/结果。入口 [`run_qlib_three_way.py`](run_qlib_three_way.py) **直接从已有本地 Qlib `sp500_provider` 读取行情与 Alpha158 表达式**，固定 LightGBM 参数训练预测，再调用本项目 Qlib `TopkDropoutStrategy` 执行组合回测。不再使用原特征 CSV 充当行情；不下载外部数据，不连接券商。
+借鉴 [QuantaAlpha](https://github.com/QuantaAlpha/QuantaAlpha/blob/main/README.md) 的 **官方因子／自定义因子／合并因子** 对照，而不是复制论文或该仓库的模型/结果。入口 [`run_qlib_three_way.py`](../../quant-method/machine-learn/run_qlib_three_way.py) **直接从已有本地 Qlib `sp500_provider` 读取行情与 Alpha158 表达式**，固定 LightGBM 参数训练预测，再调用本项目 Qlib `TopkDropoutStrategy` 执行组合回测。不再使用原特征 CSV 充当行情；不下载外部数据，不连接券商。
 
 **结果只能当迭代诊断，不是新的样本外 Alpha。** Yahoo 构建的 Qlib provider 用当前 S&P 成员快照回填历史（缺退出成分）；两个自定义表达式对应的是事后提出的 `roc30_ts_slope_30` / `corr20_ts_mean_20`，在历史回测当时不可用；2022–2023 收益此前也已查看。自定义是这两个提案的 Qlib 表达式实现，不代表 QuantaAlpha 原项目的因子，也没有事后按回测收益再选择特征。
 

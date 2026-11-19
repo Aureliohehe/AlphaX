@@ -13,7 +13,7 @@
 
 `machine-learn/build_features.py` 生成 **149 个 `alpha158_` 前缀特征**（另外还有原有技术字段），是本项目 pandas 的 Alpha158-*style* 实现，并非加载了 Qlib 官方 provider：`vwap` 用 OHLC 典型价近似；`beta/rsqr/resi` 用简化回归代理；`imax/imin/imxd` 以及 `rank` 的实现语义与 Qlib 官方表达式不同；部分 Qlib 量价操作没有复刻。其中所选 18 项已在同源 Qlib provider 的 2022 年六只股票样本上做数值对照（最大绝对误差 <8e-6；见 [`DATA_PROVENANCE_AUDIT.md`](DATA_PROVENANCE_AUDIT.md)），但这不认证完整因子库、官方数据来源或历史成分。若要精确宣称使用官方 Alpha158，仍须接入一致的 OHLCV/VWAP、表达式和因子生成器，并做全字段一致性测试。
 
-本次只从先验的 K 线、动量、均线、波动、价格区间、量价相关、涨跌频率与方向幅度家族选了 **18 个**字段，名单和假设固定在 [`candidates_alpha158_curated_v1.json`](candidates_alpha158_curated_v1.json)（SHA-256 `3447cf37ad5c190a01fd7b8f11c17d0ede407383036890d3c4ada119010df715`）。跳过上述明确的代理字段以及近似 VWAP。为避免普通 Miner 特征在 Pearson IC 前自动 RankNorm，本候选用安全 `expression: {"op":"feature", "feature":"..."}` 评价**原始字段值**；不执行任意外部代码。字段只是有公开出处的候选，不代表预先证明了预测能力。原始股票集合和并集交易日历仍未通过 point-in-time 成分/权威日历审计。
+本次只从先验的 K 线、动量、均线、波动、价格区间、量价相关、涨跌频率与方向幅度家族选了 **18 个**字段，名单和假设固定在 [`candidates_alpha158_curated_v1.json`](../../quant-method/alphacrafter/candidates_alpha158_curated_v1.json)（SHA-256 `3447cf37ad5c190a01fd7b8f11c17d0ede407383036890d3c4ada119010df715`）。跳过上述明确的代理字段以及近似 VWAP。为避免普通 Miner 特征在 Pearson IC 前自动 RankNorm，本候选用安全 `expression: {"op":"feature", "feature":"..."}` 评价**原始字段值**；不执行任意外部代码。字段只是有公开出处的候选，不代表预先证明了预测能力。原始股票集合和并集交易日历仍未通过 point-in-time 成分/权威日历审计。
 
 ## 已执行的严格准入诊断
 

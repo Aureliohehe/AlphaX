@@ -196,7 +196,7 @@ class MinerHarnessTests(unittest.TestCase):
             parse_llm_candidates([{"candidate_id": "broken", "op": "eval", "features": ["feature_a"]}], ["feature_a"], [])
 
     def test_curated_alpha158_candidates_are_explicit_and_not_proxy_regressions(self) -> None:
-        source = Path(__file__).with_name("candidates_alpha158_curated_v1.json")
+        source = Path(__file__).resolve().parents[1].joinpath("candidates_alpha158_curated_v1.json")
         payload = json.loads(source.read_text())
         self.assertEqual(len(payload), 18)
         self.assertEqual(len({item["candidate_id"] for item in payload}), 18)

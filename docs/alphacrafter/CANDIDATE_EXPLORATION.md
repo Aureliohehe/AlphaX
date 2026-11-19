@@ -1,6 +1,6 @@
 # 12 个技术因子候选：探索性准入诊断
 
-**不是新的样本外实验。** 在已经查看过先前实验的 2023 验证结果与 2024–2026 留出结果后，才固定本次候选集合。这里不重新执行旧留出区间的 Screener/Trader，也不使用留出标签挑选或放宽门槛；2022/2023 均只作研究诊断。候选于两次运行前写入 [`candidates_technical_exploratory_v1.json`](candidates_technical_exploratory_v1.json)，并保持相同内容。候选属于价格量技术特征，不包含新的 point-in-time 基本面/新闻数据，也未证明其为“优质”因子。
+**不是新的样本外实验。** 在已经查看过先前实验的 2023 验证结果与 2024–2026 留出结果后，才固定本次候选集合。这里不重新执行旧留出区间的 Screener/Trader，也不使用留出标签挑选或放宽门槛；2022/2023 均只作研究诊断。候选于两次运行前写入 [`candidates_technical_exploratory_v1.json`](../../quant-method/alphacrafter/candidates_technical_exploratory_v1.json)，并保持相同内容。候选属于价格量技术特征，不包含新的 point-in-time 基本面/新闻数据，也未证明其为“优质”因子。
 
 ## 固定范围与窗口
 

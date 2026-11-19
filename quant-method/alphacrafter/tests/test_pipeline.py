@@ -10,7 +10,7 @@ import unittest
 import pandas as pd
 
 from run_pipeline import Pipeline, build_plan, fingerprint_set, verify_fingerprints
-from test_temporal import fixture_panel, run_cli
+from .test_temporal import fixture_panel, run_cli
 from trader_lite import load_inputs, simulate, TraderConfig
 
 

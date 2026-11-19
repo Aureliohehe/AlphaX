@@ -20,7 +20,7 @@ from temporal import (
 )
 
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
 
 
 def fixture_panel(periods=80):

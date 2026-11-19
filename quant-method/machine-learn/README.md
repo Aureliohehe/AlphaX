@@ -24,7 +24,7 @@ python3 download_market_data.py --workers 8
 
 ## 重要可复现性约定
 
-1. 成分股文件固定为 datasets/s-and-p-500-companies 在 2025-08-12 的 commit，而不是使用会变化的 master；但它**仍是当前快照，不是 2016–2026 的 point-in-time 历史成分股**。已核实特征面板有 130,418 行早于股票在该快照的 `Date added`，历史退出股票也未包括；不能把固定 commit 误称为消除成分股前视。独立日历及数据时点审计见 [`../alphacrafter/DATA_PROVENANCE_AUDIT.md`](../alphacrafter/DATA_PROVENANCE_AUDIT.md)。
+1. 成分股文件固定为 datasets/s-and-p-500-companies 在 2025-08-12 的 commit，而不是使用会变化的 master；但它**仍是当前快照，不是 2016–2026 的 point-in-time 历史成分股**。已核实特征面板有 130,418 行早于股票在该快照的 `Date added`，历史退出股票也未包括；不能把固定 commit 误称为消除成分股前视。独立日历及数据时点审计见 [`../alphacrafter/DATA_PROVENANCE_AUDIT.md`](../../docs/alphacrafter/DATA_PROVENANCE_AUDIT.md)。
 2. Yahoo Finance 当前无法返回其中 14 个股票代码的完整历史序列，因此当前有效股票数为 489/503；具体失败项见 `data/raw/sp500/manifest.json`。后续训练和 Agent 实验必须使用同一个有效股票集合。
 3. `adj_close` 用于收益/标签计算；OHLC 用于技术特征。不要把未来日期数据用于训练。
 4. 这一步只有价格量数据。论文提到的 Lixinger 基本面、财务报表和新闻还没有公开可复现的下载入口；若要严格复现“technical + fundamental”的 XGBoost，需要补齐该部分，并在数据可用日期上做 point-in-time 对齐，避免财报发布日期之后才可见的数据泄漏。
@@ -52,11 +52,11 @@ python3 build_features.py
 
 ## Qlib 行情三组回测（研究性对照）
 
-借鉴 QuantaAlpha 的官方特征／自定义特征／组合特征实验结构，已用本地 Qlib provider 中的 **Qlib 官方 Alpha158 固定 20 特征**、两个事后 LLM 候选及组合做同口径 LightGBM + TopkDropout 扣费比较，详见 [`QLIB_THREE_WAY.md`](QLIB_THREE_WAY.md)。2022–2023 已被查看、数据成员为当前快照，结果仅为历史研究诊断，不是新样本外收益。
+借鉴 QuantaAlpha 的官方特征／自定义特征／组合特征实验结构，已用本地 Qlib provider 中的 **Qlib 官方 Alpha158 固定 20 特征**、两个事后 LLM 候选及组合做同口径 LightGBM + TopkDropout 扣费比较，详见 [`QLIB_THREE_WAY.md`](../../docs/machine-learn/QLIB_THREE_WAY.md)。2022–2023 已被查看、数据成员为当前快照，结果仅为历史研究诊断，不是新样本外收益。
 
 ## 固定预算的 Qlib 因子研究轨迹
 
-借鉴 QuantaAlpha 的假设、回测反馈、父子轨迹与窗口变异/秩交叉，新增 [`FACTOR_TRAJECTORIES.md`](FACTOR_TRAJECTORIES.md)：本地 8 次 Qlib 验证期评估，记录每一项对固定 Alpha158 基线的增量、表达式、父节点和反馈；没有再次运行新 LLM API，也没有使用 2022+ 测试期来选择新因子。历史验证数据已被查看，结果不可当作新样本外收益。
+借鉴 QuantaAlpha 的假设、回测反馈、父子轨迹与窗口变异/秩交叉，新增 [`FACTOR_TRAJECTORIES.md`](../../docs/machine-learn/FACTOR_TRAJECTORIES.md)：本地 8 次 Qlib 验证期评估，记录每一项对固定 Alpha158 基线的增量、表达式、父节点和反馈；没有再次运行新 LLM API，也没有使用 2022+ 测试期来选择新因子。历史验证数据已被查看，结果不可当作新样本外收益。
 
 ## Qlib + XGBoost 基线
 
@@ -145,4 +145,4 @@ conda run -n tradingagents python qlib_portfolio_backtest.py \
 
 ## 前推验证
 
-已对 `target_open_close` XGBoost 做 2021、2022、2023 三个前推年度验证，并保留 2024–2026 作为最终留出集。模型只有 2021 年跑赢等权基准，2022、2023 和最终留出集均未跑赢，详情见 [`WALK_FORWARD_EXPERIMENT.md`](WALK_FORWARD_EXPERIMENT.md)。因此后续不在留出集上继续调参，而应做时间滚动的 Miner 因子准入和信号融合。
+已对 `target_open_close` XGBoost 做 2021、2022、2023 三个前推年度验证，并保留 2024–2026 作为最终留出集。模型只有 2021 年跑赢等权基准，2022、2023 和最终留出集均未跑赢，详情见 [`WALK_FORWARD_EXPERIMENT.md`](../../docs/machine-learn/WALK_FORWARD_EXPERIMENT.md)。因此后续不在留出集上继续调参，而应做时间滚动的 Miner 因子准入和信号融合。

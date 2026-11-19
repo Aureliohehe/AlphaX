@@ -120,7 +120,7 @@ class AdmissionTests(unittest.TestCase):
             for filename, value in (("metrics.json", self.results), ("candidates.json", self.definitions), ("audit.json", self.audit)):
                 (root / filename).write_text(json.dumps(value))
             out = root / "out"
-            subprocess.run([sys.executable, str(Path(__file__).with_name("run_research_pool.py")),
+            subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1].joinpath("run_research_pool.py")),
                             "--metrics", str(root/"metrics.json"), "--candidates", str(root/"candidates.json"),
                             "--temporal-audit", str(root/"audit.json"), "--market", "cn", "--output-dir", str(out)],
                            check=True, capture_output=True, text=True)
@@ -131,7 +131,7 @@ class AdmissionTests(unittest.TestCase):
             medium = [{"candidate_id": "weak", "horizons": {h: self.results[0]["horizons"]["5"] for h in ("5", "20")}}]
             (root/"metrics.json").write_text(json.dumps(medium))
             (root/"audit.json").write_text(json.dumps({**self.audit, "label_mode": "execution_open_open"}))
-            subprocess.run([sys.executable, str(Path(__file__).with_name("run_research_pool.py")),
+            subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1].joinpath("run_research_pool.py")),
                             "--metrics", str(root/"metrics.json"), "--candidates", str(root/"candidates.json"),
                             "--temporal-audit", str(root/"audit.json"), "--market", "cn", "--horizons", "5,20",
                             "--output-dir", str(root/"medium")], check=True, capture_output=True, text=True)
@@ -154,7 +154,7 @@ class AdmissionTests(unittest.TestCase):
             frame.drop(columns="prediction").to_csv(root/"features.csv", index=False)
             frame.rename(columns={"date": "datetime", "ticker": "instrument"})[["datetime", "instrument", "prediction"]].to_csv(root/"predictions.csv", index=False)
             (root/"pool.json").write_text(json.dumps(self.pool()[0]))
-            command = [sys.executable, str(Path(__file__).with_name("trader_lite.py")),
+            command = [sys.executable, str(Path(__file__).resolve().parents[1].joinpath("trader_lite.py")),
                        "--input", str(root/"features.csv"), "--predictions", str(root/"predictions.csv"),
                        "--calendar", str(root/"calendar.csv"), "--require-explicit-label-dates",
                        "--research-pool", str(root/"pool.json"), "--configs", ".8,1,1,0",

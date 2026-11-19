@@ -336,7 +336,7 @@ conda run -n tradingagents python run_xgb_experiments.py
 """
     (args.output_dir / "experiment_report.md").write_text(report)
     # Keep a tracked research note as well as the ignored machine-readable artifacts.
-    (Path(__file__).resolve().parent / "XGB_EXPERIMENTS.md").write_text(report)
+    (Path(__file__).resolve().parents[2] / "docs/machine-learn/XGB_EXPERIMENTS.md").write_text(report)
     print(report)
 
 

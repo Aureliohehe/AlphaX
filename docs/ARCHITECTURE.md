@@ -43,8 +43,8 @@ CSI300、中低频持仓及 Qlib 三组消融是独立研究分支，不应视�
 | `machine-learn/data/raw/` | 原始行情、成员记录及来源信息 | 下载和导入脚本生成 |
 | `machine-learn/data/processed/` | 特征面板、标签结束日、日历及清单 | 特征工程生成 |
 | `machine-learn/data/qlib/` | 本地 Qlib provider、模型和实验结果 | 各实验入口生成 |
-| 两个代码目录下的 `test_*.py` | 数据契约、计算逻辑和流程集成测试 | `unittest` |
-| 两个代码目录下的 `*.md` | 使用说明、实验记录、指标与数据审计 | 各自 README 为索引 |
+| 两个代码目录下的 `tests/` | 数据契约、计算逻辑和流程集成测试 | 仓库根目录的 `make test` |
+| `docs/alphacrafter/`、`docs/machine-learn/` | 实验记录、指标与数据审计 | 各代码目录的 README 为索引 |
 
 表中的 `machine-learn/data/` 相对于 `quant-method/`。大部分行情、缓存与实验产物被 `.gitignore` 排除，检出代码不代表已具备可运行的数据环境。
 
@@ -96,7 +96,7 @@ LLM 是候选生成和部分筛选判断的可选组件；默认流程无需调�
 - 实验使用新输出目录，历史快照不可覆盖；失败停止并保留日志，不自动续跑。
 - 读取结果应确认 `status.json` 为 `completed`，不能仅凭部分文件判断成功。
 
-详细时序与产物结构见 [PIPELINE.md](quant-method/alphacrafter/PIPELINE.md) 和 [TEMPORAL_REPLAY.md](quant-method/alphacrafter/TEMPORAL_REPLAY.md)。
+详细时序与产物结构见 [PIPELINE.md](alphacrafter/PIPELINE.md) 和 [TEMPORAL_REPLAY.md](alphacrafter/TEMPORAL_REPLAY.md)。
 
 ## 6. CSI300 与中低频研究分支
 
@@ -111,13 +111,13 @@ LLM 是候选生成和部分筛选判断的可选组件；默认流程无需调�
 
 项目已实现研究链路和时点审计，但尚未复现论文收益，也未连接券商。严格准入允许得出“没有合格因子或策略”的结果；放宽门槛的演示与历史探索不等同于严格流程成功。
 
-S&P 500 主数据仍存在当前成分股快照、历史退出成员及部分数据来源时点的限制。具备时间隔离代码不等于数据本身已经通过 point-in-time 认证。详见 [REPRODUCTION_STATUS.md](quant-method/alphacrafter/REPRODUCTION_STATUS.md) 与 [DATA_PROVENANCE_AUDIT.md](quant-method/alphacrafter/DATA_PROVENANCE_AUDIT.md)。
+S&P 500 主数据仍存在当前成分股快照、历史退出成员及部分数据来源时点的限制。具备时间隔离代码不等于数据本身已经通过 point-in-time 认证。详见 [REPRODUCTION_STATUS.md](alphacrafter/REPRODUCTION_STATUS.md) 与 [DATA_PROVENANCE_AUDIT.md](alphacrafter/DATA_PROVENANCE_AUDIT.md)。
 
 从代码组织看，当前仍是脚本型研究仓库：核心算法、CLI、LLM 客户端和注册表维护较多集中在 `miner_lite.py`；Screener 与研究分支直接复用其函数，跨目录依赖部分通过修改 `sys.path` 实现。若后续工程化，可优先抽取数据契约、因子 DSL、评价指标和实验产物接口为共享包，再保留现有脚本作为运行入口。
 
 ## 8. 阅读与运行入口
 
-建议先读两份 [machine-learn README](quant-method/machine-learn/README.md) 和 [AlphaCrafter README](quant-method/alphacrafter/README.md)，再沿 `data_contract.py → build_features.py → temporal.py → miner_lite.py → screener_lite.py → trader_lite.py → run_pipeline.py` 阅读主链路。
+建议先读两份 [machine-learn README](../quant-method/machine-learn/README.md) 和 [AlphaCrafter README](../quant-method/alphacrafter/README.md)，再沿 `data_contract.py → build_features.py → temporal.py → miner_lite.py → screener_lite.py → trader_lite.py → run_pipeline.py` 阅读主链路。
 
 检查默认滚动计划：
 
@@ -130,8 +130,7 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 该命令依赖本地特征数据，dry-run 只预检计划，不能替代完整实验。核心回归测试入口：
 
 ```bash
-cd quant-method/alphacrafter
-python3 -m unittest discover -v
+make test
 ```
 
-模型基线和相关数据测试位于 `quant-method/machine-learn/test_*.py`。运行环境以两目录的 `requirements.txt` 和 README 为依据，部分研究脚本还使用额外的模型或数据读取依赖。
+运行环境以两目录的 `requirements.txt` 和 README 为依据，部分研究脚本还使用额外的模型或数据读取依赖。

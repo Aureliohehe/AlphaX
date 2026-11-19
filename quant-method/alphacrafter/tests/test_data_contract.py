@@ -23,10 +23,10 @@ from run_alpha158_model_diagnostic import candidate_features, fold_masks, daily_
 from audit_sp500_universe import audit as audit_sp500_universe, snapshot_entries
 from compare_alpha158_qlib import compare as compare_qlib_fields
 from trader_lite import TraderConfig, load_inputs, simulate
-from test_temporal import fixture_panel, run_cli
+from .test_temporal import fixture_panel, run_cli
 
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]
 
 
 def raw_panel(periods=180):

@@ -1,6 +1,5 @@
 import io
 import json
-import sys
 import tempfile
 import unittest
 from datetime import date
@@ -8,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from download_historical_member_prices import get_quotes, historical_symbols
 from audit_yahoo_supplement import audit
 

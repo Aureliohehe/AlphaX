@@ -77,7 +77,7 @@ class ScreenerTests(unittest.TestCase):
             root = Path(tmp)
             (root / "raw").mkdir()
             raw.to_csv(root / "raw/A.csv", index=False)
-            builder = Path(__file__).resolve().parents[1] / "machine-learn/build_features.py"
+            builder = Path(__file__).resolve().parents[2] / "machine-learn/build_features.py"
             subprocess.run([
                 sys.executable, str(builder), "--input", str(root / "raw"),
                 "--output", str(root / "features.csv.gz"),
@@ -105,7 +105,7 @@ class ScreenerTests(unittest.TestCase):
                 }],
             }))
             subprocess.run([
-                sys.executable, str(Path(__file__).with_name("screener_lite.py")),
+                sys.executable, str(Path(__file__).resolve().parents[1].joinpath("screener_lite.py")),
                 "--input", str(root / "features.csv"), "--factor-library", str(root / "library.json"),
                 "--output-dir", str(root / "out"),
             ], check=True, capture_output=True, text=True)

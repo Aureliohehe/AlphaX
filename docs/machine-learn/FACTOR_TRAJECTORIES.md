@@ -1,6 +1,6 @@
 # 固定预算的 Qlib 因子轨迹实验
 
-借鉴 QuantaAlpha 的假设→表达式→Qlib 回测→反馈→变异／交叉轨迹，不复制它的“RankIC>0 即成功”或对测试期反复进化。入口 [`run_factor_trajectories.py`](run_factor_trajectories.py)。**这次不是新 LLM API 挖掘**：当前进程无 `DEEPSEEK_API_KEY`，先以此前 LLM 提出的两个历史假设为父节点，固定四个参数化窗口变异与一个横截面秩交叉，做可重复的最小实验。可选 `--mutations proposals.json` 接收恰好四条事先固定的 `parent_id`/`window`/`hypothesis` JSON；只允许两个已有父节点和窗口 5–60，**不执行外来代码或任意 Qlib 字符串**。每次使用新输出目录，事先锁定 8 次评估预算。
+借鉴 QuantaAlpha 的假设→表达式→Qlib 回测→反馈→变异／交叉轨迹，不复制它的“RankIC>0 即成功”或对测试期反复进化。入口 [`run_factor_trajectories.py`](../../quant-method/machine-learn/run_factor_trajectories.py)。**这次不是新 LLM API 挖掘**：当前进程无 `DEEPSEEK_API_KEY`，先以此前 LLM 提出的两个历史假设为父节点，固定四个参数化窗口变异与一个横截面秩交叉，做可重复的最小实验。可选 `--mutations proposals.json` 接收恰好四条事先固定的 `parent_id`/`window`/`hypothesis` JSON；只允许两个已有父节点和窗口 5–60，**不执行外来代码或任意 Qlib 字符串**。每次使用新输出目录，事先锁定 8 次评估预算。
 
 ```bash
 /home/jack/miniconda3/envs/tradingagents/bin/python \
