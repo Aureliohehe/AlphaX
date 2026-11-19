@@ -150,11 +150,12 @@ class SearchTests(unittest.TestCase):
         self.assertIn("Generate exactly 2", prompt)
         self.assertIn("weekly context", prompt)
 
-    def test_specialists_share_requested_budget_even_with_duplicates(self):
-        from miner_lite import generate_llm_candidate_cluster
-        with patch("miner_lite.generate_llm_candidates", return_value=[self.candidate]) as provider:
-            generate_llm_candidate_cluster("mock", ["x"], "context", 10, 3, strict_budget=True)
-        self.assertEqual([call.args[3] for call in provider.call_args_list], [4, 4, 2])
+    def test_langgraph_specialists_share_requested_budget(self):
+        from langgraph_miner import _fan_out
+        with patch("langgraph_miner.Send", side_effect=lambda node, state: state):
+            tasks = _fan_out({"available": ["x"], "model": "mock", "market_context": "context",
+                              "requested_count": 10, "agent_count": 3})
+        self.assertEqual([task["per_agent_count"] for task in tasks], [4, 3, 3])
 
     def test_cli_passes_only_training_rows_to_search(self):
         from miner_lite import main
@@ -183,7 +184,7 @@ class SearchTests(unittest.TestCase):
                     "--search-batch-size", "1"]
             candidate = Candidate("x", "feature", ("feature_x",), "fixture")
             with patch("sys.argv", args), patch("miner_search.run_search", side_effect=inspect), patch(
-                "miner_lite.generate_llm_candidate_cluster", return_value=[candidate]
+                "langgraph_miner.generate_langgraph_candidates", return_value=[candidate]
             ):
                 main()
             report = json.loads((output / "search_feedback.json").read_text())

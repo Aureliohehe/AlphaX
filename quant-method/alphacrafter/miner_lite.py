@@ -741,51 +741,6 @@ Point-in-time market context: {market_context}
     return parse_llm_candidates(payload, available, audit if audit is not None else [])
 
 
-def generate_llm_candidate_cluster(
-    model: str,
-    available: Sequence[str],
-    market_context: str,
-    count: int,
-    agents: int,
-    audit: Optional[List[Dict[str, object]]] = None,
-    strict_budget: bool = False,
-) -> List[Candidate]:
-    """Run independent specialist Miner agents and deduplicate their proposals."""
-    if agents < 1:
-        raise ValueError("agents must be positive")
-    roles = list(MINER_AGENT_ROLES)
-    proposals: List[Candidate] = []
-    seen_ids = set()
-    seen_expressions = set()
-    per_agent = max(1, int(np.ceil(count / agents)))
-    for index in range(agents):
-        role = roles[index % len(roles)]
-        requested = min(per_agent, count - index * per_agent if strict_budget else count - len(proposals))
-        if requested <= 0:
-            break
-        for candidate in generate_llm_candidates(
-            model, available, market_context, requested, role=role, audit=audit
-        ):
-            expression = candidate.expression
-            candidate_id = candidate.candidate_id
-            if expression in seen_expressions:
-                continue
-            if candidate_id in seen_ids:
-                candidate = Candidate(
-                    candidate_id=f"{candidate_id}__agent{index + 1}",
-                    op=candidate.op,
-                    features=candidate.features,
-                    hypothesis=candidate.hypothesis,
-                    expression_spec=candidate.expression_spec,
-                )
-            seen_ids.add(candidate.candidate_id)
-            seen_expressions.add(expression)
-            proposals.append(candidate)
-            if len(proposals) >= count:
-                return proposals
-    return proposals
-
-
 def _deepseek_tool_call(
     messages: List[Dict[str, object]],
     model: str,
@@ -1350,9 +1305,9 @@ def main() -> None:
                         help="Proposal slots within search-budget to replace missing candidates with new hypotheses")
     parser.add_argument(
         "--llm-orchestrator",
-        choices=("direct", "langgraph"),
-        default="direct",
-        help="Candidate orchestration backend for LLM Miner agents",
+        choices=("langgraph",),
+        default="langgraph",
+        help="Optional explicit selection of the LangGraph backend",
     )
     parser.add_argument(
         "--llm-agents",
@@ -1426,7 +1381,7 @@ def main() -> None:
         parser.error("Search budgets/rounds must be positive and folds >=2")
     if args.llm_factor_mine_skill_dir and (not args.llm_model or args.candidate_file or args.search_rounds != 1):
         parser.error("--llm-factor-mine-skill-dir requires one LLM proposal round and excludes --candidate-file")
-    if args.llm_weekly_feedback_dir and (not args.llm_seed_file or args.llm_orchestrator != "langgraph"):
+    if args.llm_weekly_feedback_dir and not args.llm_seed_file:
         parser.error("--llm-weekly-feedback-dir requires seeded LangGraph generation")
     if args.llm_seed_file and (not args.llm_model or args.candidate_file or args.search_rounds != 1):
         parser.error("--llm-seed-file requires single-round LLM generation and excludes --candidate-file")
@@ -1533,6 +1488,8 @@ def main() -> None:
         candidates = load_candidates(args.candidate_file, available)
         generator = "external_json"
     elif args.llm_model:
+        from langgraph_miner import generate_langgraph_candidates
+
         if args.llm_agents < 1:
             parser.error("--llm-agents must be positive")
         market_context = build_market_context(frame, train_mask)
@@ -1610,25 +1567,22 @@ def main() -> None:
                     "a follow-up metric and state it in the hypothesis. The folds are training search "
                     "data. Return at most the requested number of proposals."
                 )
-                if args.llm_orchestrator == "langgraph":
-                    from langgraph_miner import generate_langgraph_candidates
+                return generate_langgraph_candidates(
+                    args.llm_model, available, context, count, args.llm_agents,
+                    audit=llm_candidate_audit,
+                )
 
-                    return generate_langgraph_candidates(args.llm_model, available, context, count,
-                                                         args.llm_agents)
-                return generate_llm_candidate_cluster(args.llm_model, available, context, count,
-                                                      min(args.llm_agents, count), audit=llm_candidate_audit,
-                                                      strict_budget=True)
-
-            candidates, search_report = run_search(
-                propose, search_frame, available, search_targets, search_ends,
-                rounds=args.search_rounds, budget=args.search_budget,
-                batch_size=args.search_batch_size, folds=args.search_folds, reserve=args.search_reserve,
-            )
-            generator = f"llm_feedback_search:{args.llm_model}:{args.llm_orchestrator}"
-        elif args.llm_orchestrator == "langgraph":
             try:
-                from langgraph_miner import generate_langgraph_candidates
-
+                candidates, search_report = run_search(
+                    propose, search_frame, available, search_targets, search_ends,
+                    rounds=args.search_rounds, budget=args.search_budget,
+                    batch_size=args.search_batch_size, folds=args.search_folds, reserve=args.search_reserve,
+                )
+            except (ImportError, RuntimeError, ValueError) as exc:
+                parser.error(str(exc))
+            generator = f"llm_feedback_search:{args.llm_model}:langgraph"
+        else:
+            try:
                 candidates = generate_langgraph_candidates(
                     args.llm_model,
                     available,
@@ -1637,20 +1591,11 @@ def main() -> None:
                     args.llm_agents,
                     controls=list(controls) if seeds else (),
                     feedback_by_control=feedback_prompts,
+                    audit=llm_candidate_audit,
                 )
             except (ImportError, RuntimeError, ValueError) as exc:
                 parser.error(str(exc))
             generator = f"llm_langgraph:{args.llm_model}:{args.llm_agents}"
-        else:
-            candidates = generate_llm_candidate_cluster(
-                args.llm_model,
-                available,
-                market_context,
-                args.llm_count,
-                args.llm_agents,
-                audit=llm_candidate_audit,
-            )
-            generator = f"llm_cluster:{args.llm_model}:{args.llm_agents}"
     else:
         candidates = template_candidates(available, args.max_pairs, args.max_temporal)
         generator = "template_v1"

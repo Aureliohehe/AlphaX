@@ -178,13 +178,12 @@ python3 quant-method/alphacrafter/miner_lite.py \
   --llm-count 40
 ```
 
-也支持 `deepseek/deepseek-chat`、`deepseek-reasoner`。可用 `--llm-agents` 调整专业 agent 数量。默认的 `direct` 后端顺序调用 Agent；安装 LangGraph 后可以用 `Send` 做并行 fan-out/fan-in：
+也支持 `deepseek/deepseek-chat`、`deepseek-reasoner`。可用 `--llm-agents` 调整专业 agent 数量。启用 LLM 候选生成需要安装 LangGraph，由 `Send` 并行派发提案并汇总结果。
 
 ```bash
 python3 -m pip install -r quant-method/alphacrafter/requirements.txt
 python3 quant-method/alphacrafter/miner_lite.py \
   --llm-model deepseek-chat \
-  --llm-orchestrator langgraph \
   --llm-agents 3 \
   --llm-count 40
 ```
@@ -335,7 +334,7 @@ A 股频率研究有两条并行资格路径。单因子按分频门槛进入动
 
 周频组合采用基于已观察样本校准的研究配置。组合初筛使用 2019–2020 年训练和 2021 年验证，Rank ICIR 门槛为 0.09，保留 90% 覆盖率要求。验证成交时，年化收益须 >2%、Sharpe >0.25、最大回撤幅度 <12%，且标准成本和双倍佣金、滑点均通过。其他频率与单因子路径沿用各自已有门槛。校准窗口的结果用于研究选择。
 
-Miner 可用 `--llm-seed-file candidates_four_factor_core_v1.json --llm-model deepseek-chat --llm-orchestrator langgraph`，以 JSON 原因子作对照，接受 LLM 生成的单项替换。每个提案必须引用对照 ID，只能换一个同族窗口字段或对原因子施加一个安全的时序变换。Miner 输出保留 JSON 对照和通过表达式约束的 LLM 变体，来源记录在候选审计。频率研究再按组合分数和执行指标决定是否进入周频策略。
+Miner 可用 `--llm-seed-file candidates_four_factor_core_v1.json --llm-model deepseek-chat`，以 JSON 原因子作对照，接受 LLM 生成的单项替换。每个提案必须引用对照 ID，只能换一个同族窗口字段或对原因子施加一个安全的时序变换。Miner 输出保留 JSON 对照和通过表达式约束的 LLM 变体，来源记录在候选审计。频率研究再按组合分数和执行指标决定是否进入周频策略。
 
 四因子定向 LLM 模式为每个对照分配独立的 LangGraph 提案任务。允许同族窗口替换、原信号时序均值，以及防御信号的时序最小值或最大值。周频 LLM 替换须在训练期三个配对分段里至少两段提高组合 Rank IC，且前 30 名最差一成持有收益不恶化、名单更换增加不超过两个百分点，然后才与原因子比较验证期表现。
 
@@ -343,4 +342,4 @@ Miner 可用 `--llm-seed-file candidates_four_factor_core_v1.json --llm-model de
 
 ### 试用外部因子研究 skill
 
-将上游 `quantskills/skill-factor-mine` 检出到项目外的目录，运行 Miner 时指定 `--llm-factor-mine-skill-dir <checkout>`。当前适配用于单轮 LLM 生成，直接或 LangGraph 后端均可，可独立生成，也可与 `--llm-seed-file` 搭配。入口读取上游说明和两个实验记录参考文件，并在产物中保存文件哈希。每个模型候选必须含 `iteration_note` 的 `op_type`、`hypothesis`、`change`、`expected` 四个字段。独立提案使用 `add_factor`，定向替换使用 `modify_factor`。这一适配复用提案流程，信号预处理、相关性评估、实验执行及准入由本项目处理。
+将上游 `quantskills/skill-factor-mine` 检出到项目外的目录，运行 Miner 时指定 `--llm-factor-mine-skill-dir <checkout>`。当前适配用于单轮 LLM 生成，由 LangGraph 编排，可独立生成，也可与 `--llm-seed-file` 搭配。入口读取上游说明和两个实验记录参考文件，并在产物中保存文件哈希。每个模型候选必须含 `iteration_note` 的 `op_type`、`hypothesis`、`change`、`expected` 四个字段。独立提案使用 `add_factor`，定向替换使用 `modify_factor`。这一适配复用提案流程，信号预处理、相关性评估、实验执行及准入由本项目处理。

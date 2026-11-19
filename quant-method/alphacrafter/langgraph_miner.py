@@ -39,6 +39,7 @@ class MinerGraphState(TypedDict, total=False):
     assigned_control: str
     feedback_by_control: Dict[str, str]
     candidate_payloads: Annotated[List[Dict[str, object]], operator.add]
+    audit: Annotated[List[Dict[str, object]], operator.add]
     errors: Annotated[List[Dict[str, str]], operator.add]
 
 
@@ -84,6 +85,7 @@ def _fan_out(state: MinerGraphState):
 
 def _generate_agent_candidates(state: MinerGraphState) -> Dict[str, object]:
     role = state["role"]
+    audit: List[Dict[str, object]] = []
     try:
         candidates = generate_llm_candidates(
             state["model"],
@@ -91,15 +93,17 @@ def _generate_agent_candidates(state: MinerGraphState) -> Dict[str, object]:
             state["market_context"],
             int(state["per_agent_count"]),
             role=role,
+            audit=audit,
         )
         control = state.get("assigned_control")
         return {"candidate_payloads": [
             _candidate_payload(candidate) for candidate in candidates
             if not control or candidate.control_id == control
-        ][:state["per_agent_count"]]}
+        ][:state["per_agent_count"]], "audit": audit}
     except Exception as exc:  # preserve partial results from other agents
         return {
             "candidate_payloads": [],
+            "audit": audit,
             "errors": [{"role": role, "error": f"{type(exc).__name__}: {exc}"}],
         }
 
@@ -131,7 +135,10 @@ def generate_langgraph_candidates(
     market_context: str,
     count: int,
     agents: int,
-    *, controls: Sequence[str] = (), feedback_by_control: Dict[str, str] | None = None,
+    *,
+    controls: Sequence[str] = (),
+    feedback_by_control: Dict[str, str] | None = None,
+    audit: List[Dict[str, object]] | None = None,
 ) -> List[Candidate]:
     """Generate candidates through a parallel LangGraph fan-out/fan-in graph."""
     if count < 1:
@@ -170,9 +177,13 @@ def generate_langgraph_candidates(
             "feedback_by_control": feedback_by_control or {},
             "candidate_payloads": [],
             "errors": [],
+            "audit": [],
         },
         config={"max_concurrency": agents},
     )
+    if audit is not None:
+        audit.extend(result.get("audit", []))
+        audit.extend({"status": "agent_error", **error} for error in result.get("errors", []))
     candidates = _deduplicate(result.get("candidate_payloads", []), available, count)
     if not candidates:
         errors = result.get("errors", [])

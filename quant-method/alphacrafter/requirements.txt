@@ -1,4 +1,4 @@
-# Optional LLM orchestration backend
+# Required for LLM candidate generation
 typing-extensions>=4.5
 langgraph>=0.2
 # Required only for non-DeepSeek providers
