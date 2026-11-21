@@ -9,7 +9,8 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from admission import HORIZON_RESEARCH_POLICIES, build_research_pool, research_failures, strategy_plan
+from admission import (HORIZON_RESEARCH_POLICIES, assess_weekly_substitution, build_research_pool,
+                       research_failures, strategy_plan)
 from cn_portfolio import simulate_cn
 from medium_frequency import (TRADER_HORIZONS, anchor_mask, daily_rank_ic, factor_panel,
                               load_member_bars, screen_signals)
@@ -17,10 +18,10 @@ from miner_lite import evaluate_candidate_score, evaluate_score, load_candidates
 from run_cn_portfolio_research import load_quotes
 from run_combination_metrics import score_portfolio, top_observations
 from temporal import is_feature_column
-from trader_harness import (WEEKLY_COMBINATION_RISK, frequency_presets, requires_weekly_stress,
+from trader_harness import (AUDIT_CHECKS, WEEKLY_COMBINATION_RISK, frequency_presets, requires_weekly_stress,
                             select_frequency, strategy_is_feasible)
 from trader_lite import file_fingerprint, summarize
-from weekly_xgboost import fit_weekly_scorer
+from weekly_xgboost import evaluate_factor_additions, fit_weekly_scorer
 
 HERE = Path(__file__).resolve().parent
 ML = HERE.parent / "machine-learn"
@@ -52,6 +53,35 @@ WEEKLY_XGB_ID = "core4_xgboost"
 WEEKLY_COMBINATION_WINDOWS = {"train": ("2019-01-01", "2020-12-31"),
                               "validation": ("2021-01-01", "2021-12-31")}
 WEEKLY_COMBINATION_RESEARCH = replace(HORIZON_RESEARCH_POLICIES[5], min_rank_icir=.09)
+
+
+def weekly_trade_metrics(report):
+    return {"calendar_year_returns": {
+        str(year): float((1 + rows.net_return).prod() - 1)
+        for year, rows in report.groupby(report.index.year)
+    }}
+
+
+def gate_weekly_llm_trials(trials):
+    """Require executable superiority over the core at both cost levels."""
+    weekly = {trial.get("strategy_id"): trial for trial in trials if trial["horizon"] == 5}
+    core = weekly.get("core4")
+    for name, trial in weekly.items():
+        if not name or not name.startswith("core4_replace_"):
+            continue
+        if core is None:
+            trial["paired_execution"] = {"passes_paired_checks": False, "reason": "missing_core_trial"}
+        elif not all(result["execution_audit"].get(check)
+                     for result in (core, core["double_cost"]) for check in AUDIT_CHECKS):
+            trial["paired_execution"] = {"passes_paired_checks": False, "reason": "core_execution_failed"}
+        else:
+            trial["paired_execution"] = assess_weekly_substitution(
+                {"1": core, "2": core["double_cost"]},
+                {"1": trial, "2": trial["double_cost"]},
+                independent=False, require_each_year=True,
+            )
+        if not trial["paired_execution"]["passes_paired_checks"]:
+            trial["status"] = "not_feasible"
 
 
 def combination_research(frame, definitions, score_columns, calendar, first, windows, topk=30, *, seeded_llm=False):
@@ -133,16 +163,30 @@ def main():
     parser.add_argument("--miner-dir", type=Path, required=True, help="Completed Miner directory with candidates.json and registry.json")
     parser.add_argument("--feature-panel", type=Path, help="Date/ticker feature panel for Miner expressions using additional input columns")
     parser.add_argument("--evaluate-strategies", action="store_true", help="Compare daily/weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
+    parser.add_argument("--factor-strength-rule", choices=("all", "any"), default="all",
+                        help="Require all or any of Rank IC, Rank ICIR and directional hit rate for single-factor research")
     parser.add_argument("--compare-weekly-xgboost", action="store_true",
                         help="Compare frozen XGBoost and equal-weight scores on the same four weekly factors")
+    parser.add_argument("--compare-weekly-xgboost-additions", action="store_true",
+                        help="Test each LLM factor as a fifth model input and write paired replay evidence")
+    parser.add_argument("--weekly-xgboost-augmentation-weight", type=float, default=1.,
+                        help="Weight of the augmented model rank in paired addition research")
+    parser.add_argument("--weekly-xgboost-augmentation-method",
+                        choices=("refit", "factor_rank", "residual_rank"), default="refit",
+                        help="Use a refitted model, raw factor rank, or rank residual to the core factors")
     args = parser.parse_args()
-    if args.compare_weekly_xgboost and not args.evaluate_strategies:
-        parser.error("--compare-weekly-xgboost requires --evaluate-strategies")
-    if args.compare_weekly_xgboost:
+    compare_xgboost = args.compare_weekly_xgboost or args.compare_weekly_xgboost_additions
+    if compare_xgboost and not args.evaluate_strategies:
+        parser.error("Weekly XGBoost comparisons require --evaluate-strategies")
+    weight = args.weekly_xgboost_augmentation_weight
+    method = args.weekly_xgboost_augmentation_method
+    if not 0 < weight <= 1 or ((weight != 1 or method != "refit") and not args.compare_weekly_xgboost_additions):
+        parser.error("Set an augmentation weight in (0, 1] and method with --compare-weekly-xgboost-additions")
+    if compare_xgboost:
         try:
             import xgboost  # noqa: F401
         except ImportError as exc:
-            parser.error(f"Install xgboost for --compare-weekly-xgboost: {exc}")
+            parser.error(f"Install xgboost for weekly XGBoost comparisons: {exc}")
     out = args.output_dir.resolve()
     if out.exists():
         parser.error("Use a new output directory")
@@ -154,6 +198,8 @@ def main():
     first_execution = calendar[calendar >= "2022-01-01"][0]
     presets = frequency_presets()
     candidate_path, registry_path, generator, candidate_defs = miner_candidate_source(args.miner_dir, "2021-12-31")
+    if args.compare_weekly_xgboost_additions and not generator.startswith("llm_"):
+        parser.error("--compare-weekly-xgboost-additions requires LLM Miner output")
     out.mkdir(parents=True)
 
     def clean(value):
@@ -174,7 +220,7 @@ def main():
               HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "trader_harness.py",
               HERE / "run_cn_portfolio_research.py"]
     inputs.extend([candidate_path, registry_path, CORE_PATH, HERE / "run_combination_metrics.py"])
-    if args.compare_weekly_xgboost:
+    if compare_xgboost:
         inputs.append(HERE / "weekly_xgboost.py")
     if args.feature_panel:
         inputs.append(args.feature_panel)
@@ -187,7 +233,8 @@ def main():
                 "strategy_iteration": ["2022-01-01", "2023-12-31"], "final_reserved": ["2024-01-01", "2025-12-31"],
                 "strategy_iteration_previously_examined": True,
                 "research_sampling": "fixed nonoverlapping horizon anchors aligned to the frozen execution calendar phase",
-                "screening": {"lookback_completed_periods": 12, "minimum_completed_periods": 6, "min_mean_rank_ic": 0.},
+                "screening": {"lookback_completed_periods": 12, "minimum_completed_periods": 6, "min_mean_rank_ic": 0.,
+                              "factor_strength_rule": args.factor_strength_rule},
                 "presets": {str(h): asdict(c) for h, c in presets.items()}, "holdout_evaluated": False,
                 "limitations": ["5/20 sessions approximate weekly/monthly intervals, not civil-calendar weeks/months",
                                 "Supplied member/calendar/adjustment provenance not independently PIT certified",
@@ -265,6 +312,7 @@ def main():
         pool, assessments = build_research_pool(
             results, candidate_defs, audit, "cn", horizons=TRADER_HORIZONS,
             policies_by_horizon={h: HORIZON_RESEARCH_POLICIES[h] for h in TRADER_HORIZONS},
+            strength_rule=args.factor_strength_rule,
         )
         for entries in pool["candidates_by_horizon"].values():
             for entry in entries:
@@ -323,15 +371,20 @@ def main():
                     signals = frame.loc[mask, ["date", "ticker"]].assign(prediction=combination_scores[name].loc[mask])
                     if np.isfinite(signals.prediction).any():
                         strategies.append((name, item["members"], signals))
-                if h == 5 and weekly_comparison is not None:
+                needs_core = (h == 5 and generator.endswith(":seeded") and
+                              any(name.startswith("core4_replace_") for name, _, _ in strategies))
+                if h == 5 and (weekly_comparison is not None or needs_core):
                     mask = anchor_mask(frame.date, calendar, first_execution, h) & frame.date.between(previous, end)
                     weekly = frame.loc[mask, ["date", "ticker"]]
                     if not any(name == "core4" for name, _, _ in strategies):
                         diagnostics.add("core4")
-                        strategies.append(("core4", core["members"],
+                        core_members = next(item["members"] for item in combinations
+                                            if item["horizon"] == 5 and item["strategy_id"] == "core4")
+                        strategies.append(("core4", core_members,
                                            weekly.assign(prediction=combination_scores["core4"].loc[mask])))
-                    diagnostics.add(WEEKLY_XGB_ID)
-                    strategies.append((WEEKLY_XGB_ID, core["members"], weekly.assign(prediction=scores.reindex(weekly.index))))
+                    if weekly_comparison is not None:
+                        diagnostics.add(WEEKLY_XGB_ID)
+                        strategies.append((WEEKLY_XGB_ID, core["members"], weekly.assign(prediction=scores.reindex(weekly.index))))
                 if not strategies:
                     trials.append({"horizon": h, "status": "not_run_no_research_signals"})
                     continue
@@ -346,10 +399,12 @@ def main():
                              "config": asdict(config), **metrics, "execution_audit": execution_audit,
                              "paid_cost_fraction_of_initial_capital": float(trades.total_cost.sum())}
                     if requires_weekly_stress(h, members):
+                        trial.update(weekly_trade_metrics(report))
                         stress_config = replace(config, commission=2 * config.commission, slippage=2 * config.slippage)
                         stressed, _, _, stress_audit = simulate_cn(signals, quotes, calendar, stress_config, start, end)
                         stressed.to_csv(out / f"returns_{tag}_double_cost.csv")
                         trial["double_cost"] = {**summarize(stressed, 1_000_000., annual_risk_free_rate=0.),
+                                                **weekly_trade_metrics(stressed),
                                                 "execution_audit": stress_audit}
                     if name in diagnostics:
                         trial["status"] = "diagnostic_only"
@@ -365,6 +420,24 @@ def main():
                     report.to_csv(out / f"returns_{tag}.csv")
                     trades.to_csv(out / f"trades_{tag}.csv", index=False)
                     positions.to_csv(out / f"positions_{tag}.csv.gz", index=False)
+        if generator.endswith(":seeded"):
+            gate_weekly_llm_trials(trials)
+        if args.compare_weekly_xgboost_additions:
+            start, end = manifest["strategy_iteration"]
+            core = [item["candidate_id"] for item in json.loads(CORE_PATH.read_text())]
+            if generator.endswith(":seeded"):
+                if not any(item["strategy_id"] == "core4" for item in combinations):
+                    raise ValueError("Seeded XGBoost additions require the frozen core factors in Miner output")
+                variants = [item for item in candidate_defs if item.get("control_id") in core]
+            else:
+                variants = [item for item in candidate_defs if item["candidate_id"] not in core]
+            addition_scores = {**score_columns, **dict(zip(core, core))}
+            quotes = load_quotes(source / "daily_pv.h5", set(frame.ticker), calendar, start, end)
+            additions = list(evaluate_factor_additions(frame, addition_scores, core, variants, calendar, quotes,
+                                                       presets[5], (start, end), augmentation_weight=weight,
+                                                       augmentation_method=method))
+            if not additions:
+                raise ValueError("No LLM factor addition produced complete weekly research signals")
         for p, expected_hash in hashes.items():
             if file_fingerprint(Path(p)) != expected_hash:
                 raise ValueError("Input/code changed: " + p)
@@ -372,6 +445,20 @@ def main():
                    "strategy_window_is_previously_examined": True, "scope": manifest["scope"]}
         if weekly_comparison is not None:
             summary["weekly_xgboost_comparison"] = weekly_comparison
+        if args.compare_weekly_xgboost_additions:
+            registry = json.loads(registry_path.read_text())
+            write("replay_summary.json", {"window": manifest["strategy_iteration"], "independent": False,
+                                          "augmentation_weight": weight,
+                                          "augmentation_method": method,
+                                          "inputs": hashes, "rounds": {"llm": {
+                                              "miner_as_of": registry["as_of"], "generator": generator,
+                                              "variants": additions}}})
+            summary["weekly_xgboost_additions"] = {
+                "evaluated": sum(row["status"] == "evaluated" for row in additions),
+                "skipped": {row["id"]: row["status"] for row in additions if row["status"] != "evaluated"},
+                "qualifying_in_replay": [row["id"] for row in additions if row["qualifies_in_replay"]],
+                "feedback_file": "replay_summary.json",
+            }
         selection = select_frequency(trials, manifest["strategy_iteration"], evaluated=args.evaluate_strategies)
         write("strategy_selection.json", {**selection, "market": "cn", "label_mode": pool["label_mode"],
                                            "frozen_as_of": manifest["strategy_iteration"][1],

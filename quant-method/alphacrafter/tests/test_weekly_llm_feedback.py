@@ -4,11 +4,74 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from langgraph_miner import _fan_out
-from weekly_llm_feedback import load_weekly_feedback
+from langgraph_miner import _fan_out, _generate_agent_candidates
+from miner_lite import Candidate
+from weekly_llm_feedback import load_weekly_feedback, load_xgboost_feedback
 
 
 class WeeklyFeedbackTests(unittest.TestCase):
+    def test_mechanism_first_rejects_invalid_claims_and_keeps_the_frozen_falsifier(self):
+        mechanism = {"mechanism": "Stable volume can sustain reversals.",
+                     "comparison": "Matched stocks with unstable volume.",
+                     "expected_effect": "Higher five-session rank IC.",
+                     "falsifier": "Nonpositive paired rank IC delta.", "holding_sessions": 5,
+                     "control_id": "prior_factor"}
+        state = {"role": "researcher", "model": "mock", "available": ["x"],
+                 "market_context": "fixture", "per_agent_count": 2, "mechanism_first": True}
+
+        def write_expression(model, available, context, count, **kwargs):
+            self.assertEqual(count, 1)
+            frozen = json.loads(context.split("Frozen mechanisms: ", 1)[1])
+            identifier, = frozen
+            self.assertEqual(frozen[identifier], mechanism)
+            return [Candidate(identifier, "feature", ("x",), "Changed hypothesis"),
+                    Candidate("unmatched", "feature", ("x",), "Unknown mechanism")]
+
+        with patch("langgraph_miner.request_llm_json", return_value=json.dumps(
+            [mechanism, {**mechanism, "falsifier": ""}]
+        )), patch("langgraph_miner.generate_llm_candidates", side_effect=write_expression):
+            result = _generate_agent_candidates(state)
+        candidate, = result["candidate_payloads"]
+        self.assertIn(mechanism["falsifier"], candidate["hypothesis"])
+        self.assertEqual(candidate["control_id"], "prior_factor")
+        self.assertNotIn("Changed hypothesis", candidate["hypothesis"])
+        self.assertEqual([row["reason"] for row in result["audit"] if row["status"] == "mechanism_rejected"],
+                         ["invalid_mechanism_schema", "expression_id_not_frozen"])
+
+    def test_xgboost_feedback_keeps_cost_and_year_deltas_and_rejects_future_trials(self):
+        trial = {"start": "2024-01-02", "end": "2025-12-31", "trading_days": 485,
+                 "cumulative_return": .1, "max_drawdown": -.1, "mean_daily_turnover": .01,
+                 "calendar_year_returns": {"2024": 0., "2025": .1}}
+        changed = {**trial, "cumulative_return": .2, "calendar_year_returns": {"2024": .3, "2025": -.08}}
+        row = {"control": "x", "id": "variant", "expression": "ts_mean(x, 10)", "execution_passes": True,
+               "results": {"core": {"costs": {"1": trial, "2": trial}},
+                           "augmented": {"costs": {"1": changed, "2": changed}}}}
+        replay = {"window": ["2024-01-01", "2025-12-31"], "augmentation_weight": .25,
+                  "rounds": {"first": {"miner_as_of": "2023-12-31", "variants": [row]}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "replay_summary.json"
+            path.write_text(json.dumps(replay))
+            with self.assertRaisesRegex(ValueError, "Miner cutoff"):
+                load_xgboost_feedback(path, "2025-06-30", ["x"])
+            result = load_xgboost_feedback(path, "2025-12-31", ["x", "y"])
+            self.assertEqual(result["prior_expressions"], ["ts_mean(x, 10)"])
+            self.assertEqual(result["by_control"]["y"], [])
+            self.assertEqual(result["by_control"]["x"][0]["augmentation_weight"], .25)
+            paired = result["by_control"]["x"][0]["paired_execution"]
+            self.assertFalse(paired["checks"]["1"]["no_worse_each_year"])
+            self.assertAlmostEqual(paired["calendar_year_return_deltas"]["2"]["2025"], -.18)
+            changed["end"] = "2026-01-05"
+            path.write_text(json.dumps(replay))
+            with self.assertRaisesRegex(ValueError, "outside"):
+                load_xgboost_feedback(path, "2025-12-31", ["x"])
+            changed["end"] = trial["end"]
+            row["control"] = None
+            path.write_text(json.dumps(replay))
+            self.assertEqual(load_xgboost_feedback(path, "2025-12-31", None)["standalone"][0]["candidate_id"],
+                             "variant")
+            with self.assertRaisesRegex(ValueError, "proposal mode"):
+                load_xgboost_feedback(path, "2025-12-31", ["x"])
+
     def test_imports_failed_checks_and_cost_deltas_with_a_temporal_cutoff(self):
         prior = {"cumulative_return": .06, "annualized_return": .03,
                  "sharpe": .33, "max_drawdown": -.11}

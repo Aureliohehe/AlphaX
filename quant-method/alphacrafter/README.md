@@ -112,16 +112,17 @@ conda run -n tradingagents python quant-method/machine-learn/qlib_portfolio_back
 ```bash
 python3 quant-method/alphacrafter/miner_lite.py \
   --llm-model deepseek-chat \
+  --llm-mechanism-first \
   --search-rounds 3 --search-budget 30 --search-batch-size 10 \
   --search-folds 3 \
   --output-dir quant-method/machine-learn/data/qlib/miner_feedback_new
 ```
 
-需要配置模型环境变量；该命令会调用外部模型。反馈搜索仅支持 direct 后端，不能同时指定候选文件。此模式用 `search-budget` 和 `search-batch-size` 控制候选槽位，忽略 `llm-count`；重复或不足的提案也消耗槽位，不自动补抽。预算限制请求的候选数量，不限制 token 或费用；模型超额返回时截断。
+需要配置模型环境变量。LangGraph 会在每轮并行分配提案，候选槽位由 `search-budget` 和 `search-batch-size` 控制。要跑满三轮，预算应覆盖三批请求。重复或不足的提案也消耗槽位，模型超额返回时截断。
 
 搜索器仅接收训练窗口的行，先截断跨训练期末的标签，再将交易日均分成 `search-folds + 1` 个连续块。第一块作初始方向估计；后续每折用此前所有块的已兑现 1 日标签定方向，评价下一块的 1/5 日表现，并在每块末尾分别 purge。每块至少需要 5 个交易日（实际研究应使用远长于此的窗口）。反馈包含各折 IC、Rank IC、ICIR、命中率、覆盖率、换手及失败原因；后续提案接收此前全部反馈，跨轮按表达式与 ID 去重。
 
-`search_feedback.json` 保存每轮预算和逐候选诊断。全部唯一候选冻结后才进入原训练/验证准入逻辑，**不按折内最好成绩自动准入，也不更改正式门槛**。搜索折已被用于自适应研究，不是独立样本外；验证/留出指标不反馈给生成器。该功能没有修复历史成分股数据问题，也不保证找到有效因子。相似度目前只处理表达式重复，尚不处理信号相关性或极端值归因。
+`search_feedback.json` 保存每轮预算、该轮收到的反馈候选 ID 和逐候选诊断。全部唯一候选冻结后才进入原训练/验证准入逻辑。搜索折已用于自适应研究，验证和留出指标只作后续评估。
 
 LLM 不需要修改验证器，只需输出候选 JSON：
 
@@ -319,6 +320,8 @@ python3 quant-method/alphacrafter/run_four_factor_template_research.py \
 
 频率入口只从 Miner 的 candidates.json 和 registry.json 接收候选，支持 JSON、模板和 LLM 三种来源。候选用各频率的标签独立重评，Miner 旧的短周期入库结论不作为周频或月频准入。Python 量价字段可作为候选的输入。若表达式使用额外字段，通过 --feature-panel 提供按交易日和股票代码对齐的特征。历史实跑文件保留原命令和来源。
 
+可用 `--factor-strength-rule any` 做宽松的单因子研究。每个频率的训练期和验证期各自满足 Rank IC、Rank ICIR、方向命中率中的至少一项，仍须满足覆盖率和排名换手要求。Screener 用该频率已兑现的近期标签，允许平均 Rank IC 为正、Rank ICIR 达标或方向命中率达标的因子参与合成，默认至少需要六期。默认 `all` 沿用原研究池和 Screener 行为。宽松模式评估的是研究池，成交后还有 Trader 的风险与执行检查。
+
 ### 周频四因子 XGBoost 对照
 
 在沪深 300 频率研究中，可启用 XGBoost 作为备选打分器。运行前准备包含四个固定核心因子的 Miner 输出，并在当前 Python 环境安装 `xgboost`。
@@ -353,6 +356,22 @@ A 股频率研究有两条并行资格路径。单因子按分频门槛进入动
 Miner 可用 `--llm-seed-file candidates_four_factor_core_v1.json --llm-model deepseek-chat`，以 JSON 原因子作对照，接受 LLM 生成的单项替换。每个提案必须引用对照 ID，只能换一个同族窗口字段或对原因子施加一个安全的时序变换。Miner 输出保留 JSON 对照和通过表达式约束的 LLM 变体，来源记录在候选审计。频率研究再按组合分数和执行指标决定是否进入周频策略。
 
 四因子定向 LLM 模式为每个对照分配独立的 LangGraph 提案任务。允许同族窗口替换、原信号时序均值，以及防御信号的时序最小值或最大值。周频 LLM 替换须在训练期三个配对分段里至少两段提高组合 Rank IC，且前 30 名最差一成持有收益不恶化、名单更换增加不超过两个百分点，然后才与原因子比较验证期表现。
+
+周频 Trader 比较会复跑原四因子作为对照。定向 LLM 替换必须在标准和双倍佣金、滑点下同时提高累计扣费收益，且最大回撤和每个日历年的收益均不恶化。逐年收益差和失败项记录在 `paired_execution`，并随周频反馈交给下一轮 Miner。通过这一轮表示通过历史研究对照，正式准入还需要独立窗口验证。
+
+对于 XGBoost，`--llm-weekly-xgboost-feedback <replay_summary.json>` 可导入逐项增加因子的配对回放。Miner 按对照因子接收双成本收益、回撤、换手和逐年收益差，并跳过已测表达式。反馈窗口必须先于或结束于本轮信息截止日。XGBoost 增量和等权替换反馈可以同时启用。
+
+生成这份证据时，向 `run_medium_frequency.py` 传入 LLM Miner 输出，并启用 `--evaluate-strategies --compare-weekly-xgboost-additions`。定向提案和开放式提案都可以作为第五项输入，与固定四因子模型配对。训练及评分使用该对照共有的完整样本。研究入口会跳过与核心因子或已评估候选在成熟训练样本上排名完全相同的输入，并记录原因。结果写入 `replay_summary.json`。有指定对照因子的记录可以导入下一轮定向 Miner。
+
+开放式 Miner 可以启用 `--llm-xgboost-complement`，提示模型提出能补充四因子的信息，避免重复 XGBoost 已做的横截面排名，并说明潜在换手影响和可证伪条件。
+该模式也可用 `--llm-weekly-xgboost-feedback` 读取上一轮开放式候选的配对结果，避免重复测试已观察过的表达式。
+
+LLM 生成可启用 `--llm-mechanism-first`。每轮 Miner 先返回经济机制、对照组、预期方向、持有期和证伪条件，再按冻结的机制 ID 生成一条安全 AST。两步都会看到已知量价字段的计算口径和方向。机制及对应表达式写入 `economic_mechanisms.json`，表达式为空表示该机制没有对应的可用候选。当前校验检查机制字段与表达式 ID，经济含义和证伪条件仍需结合回放结果审查。
+
+研究新增因子时可设 `--weekly-xgboost-augmentation-weight 0.25`，将当日四因子模型评分的百分位排名占比设为 75%，五因子模型占比设为 25%。默认权重为 1，直接使用五因子模型评分。实验开始前固定权重，并在后续窗口沿用。
+
+加上 `--weekly-xgboost-augmentation-method factor_rank` 时，第二部分使用候选因子自身的横截面排名。两组使用同一个四因子模型，便于核对候选排名的贡献。回放反馈会记录采用的方法和权重。
+使用 `residual_rank` 时，先在每个信号日从候选排名中去掉四个核心因子排名可线性解释的部分，再对剩余信号排名并混合。此计算只使用该信号日的股票数据。
 
 定向 LLM 生成可加 `--llm-weekly-feedback-dir <上一轮频率研究输出>`。系统只导入已完成的研究窗口，按原控制因子分发组合初筛失败项、标准及双倍成本交易失败项和相对原组合的差值。下一轮输出的 `weekly_llm_feedback.json` 记录反馈及输入指纹，已测表达式不能重复提交。Miner 的 `--as-of` 必须不早于反馈窗口结束日。例如，使用 2022–2023 年交易反馈时，下一轮截止日不得早于 2023-12-31。由此产生的候选需要在更晚的窗口验证。
 

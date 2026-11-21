@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -118,6 +119,25 @@ class MediumFrequencyTests(unittest.TestCase):
                                       other_selections[other_selections.date <= cutoff].reset_index(drop=True))
         with self.assertRaisesRegex(ValueError, "research cutoff"):
             screen_signals(frame, pool, 5, dates, first_execution, dates[70], dates[-1], min_periods=2)
+
+    def test_any_strength_screen_can_select_on_directional_hit_rate(self):
+        dates = pd.bdate_range("2020-01-01", periods=36)
+        frame = pd.DataFrame({"date": dates, "ticker": "x", "factor": 1.,
+                              "target_open_open_1d": .01,
+                              "label_end_1d": pd.Series(dates).shift(-2)})
+        pool = {"artifact_type": "research_candidate_pool_v1", "market": "cn", "label_mode": "execution_open_open",
+                "as_of": str(dates[14].date()), "research_end": str(dates[14].date()),
+                "candidates_by_horizon": {"1": [{"candidate_id": "factor", "direction": 1,
+                                                 "score_column": "factor"}]}}
+        ic = pd.Series([.1, .1, .1, .1, -.9, -.9], index=dates[1:7])
+        with patch("medium_frequency.daily_rank_ic", return_value=ic):
+            strict, _ = screen_signals(frame, pool, 1, dates, dates[15], dates[15], dates[-1])
+            relaxed, selections = screen_signals(
+                frame, {**pool, "strength_rule": "any"}, 1, dates, dates[15], dates[15], dates[-1],
+            )
+        self.assertTrue(strict.empty)
+        self.assertFalse(relaxed.empty)
+        self.assertTrue((selections.last_label_end_used <= selections.date).all())
 
     def test_anchor_intervals_match_nonoverlapping_execution_periods(self):
         calendar = pd.bdate_range("2020-01-01", periods=70)

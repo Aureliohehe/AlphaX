@@ -35,7 +35,7 @@ def finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def research_failures(metric, direction, policy):
+def rank_strength_checks(metric, direction, policy):
     checks = {}
     for key, floor in (("mean_daily_rank_ic", policy.min_rank_ic), ("rank_icir", policy.min_rank_icir)):
         value = metric.get(key)
@@ -43,6 +43,13 @@ def research_failures(metric, direction, policy):
     hit = metric.get("rank_ic_hit_ratio")
     checks["hit_ratio"] = (direction is not None and finite(hit) and 0 <= hit <= 1
                            and (hit if direction > 0 else 1 - hit) > policy.min_hit)
+    return checks
+
+
+def research_failures(metric, direction, policy, *, strength_rule="all"):
+    checks = rank_strength_checks(metric, direction, policy)
+    if strength_rule == "any":
+        checks = {"rank_strength_any": any(checks.values())}
     coverage, turnover = metric.get("coverage"), metric.get("turnover")
     checks["coverage"] = finite(coverage) and policy.min_coverage < coverage <= 1
     checks["turnover"] = finite(turnover) and 0 <= turnover < policy.max_turnover
@@ -50,9 +57,12 @@ def research_failures(metric, direction, policy):
     return [name for name, passed in checks.items() if not passed]
 
 
-def build_research_pool(results, definitions, audit, market="unknown", policy=None, horizons=(1, 5), *, policies_by_horizon=None):
+def build_research_pool(results, definitions, audit, market="unknown", policy=None, horizons=(1, 5), *,
+                        policies_by_horizon=None, strength_rule="all"):
     """Read train/development only; direction is fit separately per horizon."""
     policy = policy or ResearchPolicy()
+    if strength_rule not in {"all", "any"}:
+        raise ValueError("Research strength rule must be all or any")
     if not horizons or len(set(horizons)) != len(horizons) or any(isinstance(h, bool) or not isinstance(h, int) or not 1 <= h <= 252 for h in horizons):
         raise ValueError("Research horizons must be unique positive session counts <=252")
     if policies_by_horizon is not None and set(policies_by_horizon) != set(horizons):
@@ -81,13 +91,18 @@ def build_research_pool(results, definitions, audit, market="unknown", policy=No
             fit = metrics["train"]["mean_daily_rank_ic"]
             direction = (1 if fit > 0 else -1) if finite(fit) and fit != 0 else None
             horizon_policy = policy if policies_by_horizon is None else policies_by_horizon[int(h)]
-            failures = {name: research_failures(m, direction, horizon_policy) for name, m in metrics.items()}
+            failures = {name: research_failures(m, direction, horizon_policy, strength_rule=strength_rule)
+                        for name, m in metrics.items()}
             if not complete:
                 failures["window_completion"] = ["development_incomplete"]
             eligible = not any(failures.values())
             metrics = {name: {k: v if finite(v) else None for k, v in m.items()} for name, m in metrics.items()}
             assessments.append({"candidate_id": row["candidate_id"], "horizon": int(h), "direction": direction,
-                                "research_eligible": eligible, "metrics": metrics, "failed_checks": failures})
+                                "research_eligible": eligible, "metrics": metrics, "failed_checks": failures,
+                                "passed_strength_checks": {
+                                    name: [key for key, passed in rank_strength_checks(m, direction, horizon_policy).items() if passed]
+                                    for name, m in metrics.items()
+                                }})
             if eligible:
                 definition = by_id[row["candidate_id"]]
                 selected[h].append({"candidate_id": row["candidate_id"], "horizon": int(h), "direction": direction,
@@ -99,7 +114,8 @@ def build_research_pool(results, definitions, audit, market="unknown", policy=No
             "label_mode": audit.get("label_mode", "unknown"), "as_of": str(cutoff.date()),
             "research_end": str(dev_end.date()),
             "windows": {"train": windows["train"], "development": windows["validation"]},
-            "policy": asdict(policy), "direction_policy": "fit_on_training_rank_ic_separately_per_horizon",
+            "policy": asdict(policy), "strength_rule": strength_rule,
+            "direction_policy": "fit_on_training_rank_ic_separately_per_horizon",
             "evaluated_candidates": len(results), "candidates_by_horizon": selected,
             "eligible_counts": {h: len(v) for h, v in selected.items()},
             "strategy_admitted_count": 0}
@@ -142,12 +158,12 @@ def validate_trader_pool(pool, horizon, validation_start):
         raise ValueError("Research pool has no eligible candidates for this horizon")
 
 
-def assess_weekly_substitution(core, substitution, *, independent):
+def assess_weekly_substitution(core, substitution, *, independent, require_each_year=False):
     """Require paired net improvement under both costs and no worse drawdown."""
     scenarios = {"1", "2"}
     if set(core) != scenarios or set(substitution) != scenarios:
         raise ValueError("Substitution requires both standard and double-cost results")
-    checks = {}
+    checks, year_deltas = {}, {}
     for cost in sorted(scenarios):
         baseline, variant = core[cost], substitution[cost]
         left, right = baseline["calendar_year_returns"], variant["calendar_year_returns"]
@@ -159,6 +175,9 @@ def assess_weekly_substitution(core, substitution, *, independent):
             "no_worse_drawdown": variant["max_drawdown"] >= baseline["max_drawdown"],
             "no_worse_worst_year": min(right.values()) >= min(left.values()),
         }
+        year_deltas[cost] = {year: right[year] - left[year] for year in sorted(left)}
+        if require_each_year:
+            checks[cost]["no_worse_each_year"] = all(delta >= 0 for delta in year_deltas[cost].values())
     passed = all(passed for cost in checks.values() for passed in cost.values())
-    return {"checks": checks, "passes_paired_checks": passed,
+    return {"checks": checks, "calendar_year_return_deltas": year_deltas, "passes_paired_checks": passed,
             "independent_window": independent, "replacement_admitted": bool(independent and passed)}

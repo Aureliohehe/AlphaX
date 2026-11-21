@@ -160,6 +160,7 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
         count = min(batch_size, budget - spent, missing) if supplemental else min(batch_size, budget - reserve - spent)
         if count <= 0:
             break
+        feedback_ids = [item["candidate_id"] for item in feedback] if not supplemental else []
         followup_limit = count // 2 if stable_controls and not supplemental else 0
         context = feedback
         if reserve:
@@ -234,6 +235,7 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
             report["lineage_followup_used"] = report["lineage_id"] in used_lineages
         missing += (0 if supplemental else count) - len(current)
         audit.append({"round": round_index + 1, "requested": count, "returned": len(proposals),
+                      "feedback_candidate_ids": feedback_ids,
                       "supplemental": supplemental, "followup_limit": followup_limit,
                       "unique": len(current), "rejected": rejected, "budget_spent": spent})
     return accepted, {"scope": "training_only_research_not_admission", "budget": budget,

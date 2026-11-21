@@ -48,6 +48,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(calls[0][1], [])
         self.assertEqual(calls[1][1][0]["expression"], self.candidate.expression)
         self.assertEqual(calls[1][1][0]["next_validation_tasks"][0]["control_id"], "x")
+        self.assertEqual([row["feedback_candidate_ids"] for row in audit["rounds"]], [[], ["x"]])
         json.dumps(audit, allow_nan=False)
 
     def test_diagnostics_assign_horizon_specific_followups(self):

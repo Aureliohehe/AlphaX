@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 
+from admission import HORIZON_RESEARCH_POLICIES
 from cn_portfolio import CNConfig
 
 
@@ -20,6 +21,21 @@ FACTOR_HYPOTHESES = {
     "mf_volume_confirmed_trend": "Medium trend confirmed by relative volume",
     "mf_trend_consistency_60": "Persistence in the direction of daily price changes",
     "mf_reversal_20": "Monthly price displacement may mean revert",
+}
+
+FACTOR_SEMANTICS = {
+    "mf_momentum_60_skip5": "Close shifted 5 sessions divided by close shifted 60 sessions minus 1.",
+    "mf_momentum_120_skip20": "Close shifted 20 sessions divided by close shifted 120 sessions minus 1.",
+    "mf_trend_20_60": "20-session moving average divided by 60-session moving average minus 1.",
+    "mf_trend_60_120": "60-session moving average divided by 120-session moving average minus 1.",
+    "mf_low_volatility_60": "Negative 60-session daily log-return standard deviation. Higher means lower volatility.",
+    "mf_low_downside_risk_60": "Negative 60-session downside log-return root mean square. Higher means lower downside risk.",
+    "mf_risk_adjusted_momentum_60": "60-session close return divided by (60-session log-return standard deviation times sqrt(60)).",
+    "mf_drawdown_60": "Close divided by trailing 60-session high minus 1. Higher means closer to the high, not a deeper drawdown.",
+    "mf_volume_stability_60": "Negative standard deviation of daily log-volume changes over 60 sessions. Higher means more stable.",
+    "mf_volume_confirmed_trend": "20/60-session trend multiplied by the ratio of 20- to 60-session mean volume.",
+    "mf_trend_consistency_60": "Mean sign of daily log returns over 60 sessions. Higher means more rising sessions.",
+    "mf_reversal_20": "Negative 20-session close return. Higher means a larger prior loss; a long reversal signal uses the positive orientation.",
 }
 
 
@@ -119,6 +135,8 @@ def screen_signals(frame, pool, horizon, calendar, first_execution, start, end,
     if any(pd.isna(d) for d in cutoffs) or pd.Timestamp(start) <= max(cutoffs):
         raise ValueError("Strategy screening must follow the completed research cutoff")
     entries = pool["candidates_by_horizon"].get(str(horizon), [])
+    any_strength = pool.get("strength_rule") == "any"
+    strength_policy = HORIZON_RESEARCH_POLICIES[horizon]
     if not entries:
         return pd.DataFrame(columns=["date", "ticker", "prediction"]), pd.DataFrame(columns=["date", "selected_factors"])
     scores, events = {}, {}
@@ -139,7 +157,15 @@ def screen_signals(frame, pool, horizon, calendar, first_execution, start, end,
         selected, last_end = [], None
         for name, table in events.items():
             available = table.loc[table.end <= date].sort_values("source").tail(lookback_periods)
-            if len(available) >= min_periods and available.ic.mean() > min_rank_ic:
+            if len(available) < min_periods:
+                continue
+            mean = available.ic.mean()
+            passes = mean > min_rank_ic
+            if any_strength and not passes:
+                deviation = available.ic.std(ddof=0)
+                passes = ((deviation > 0 and mean / deviation > strength_policy.min_rank_icir)
+                          or (available.ic > 0).mean() > strength_policy.min_hit)
+            if passes:
                 selected.append(name)
                 latest = available.end.max()
                 last_end = latest if last_end is None else max(last_end, latest)

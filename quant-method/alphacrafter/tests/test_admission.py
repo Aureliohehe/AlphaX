@@ -37,6 +37,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(select_configuration([good]), good)
         self.assertIsNone(select_configuration([{**good, "max_drawdown": -.12}]))
 
+    def test_any_strength_still_requires_both_splits_coverage_and_turnover(self):
+        metrics = self.results[0]["horizons"]["5"]
+        metrics["train"].update(rank_icir=.01, rank_ic_hit_ratio=.50)
+        metrics["validation"].update(mean_daily_rank_ic=.001, rank_icir=.01, rank_ic_hit_ratio=.56)
+        self.assertEqual(self.pool()[0]["eligible_counts"]["5"], 0)
+        pool, _ = build_research_pool(self.results, self.definitions, self.audit, "cn", strength_rule="any")
+        self.assertEqual(pool["eligible_counts"]["5"], 1)
+        metrics["validation"]["coverage"] = .80
+        pool, _ = build_research_pool(self.results, self.definitions, self.audit, "cn", strength_rule="any")
+        self.assertEqual(pool["eligible_counts"]["5"], 0)
+        metrics["validation"].update(coverage=.95, turnover=.80)
+        pool, _ = build_research_pool(self.results, self.definitions, self.audit, "cn", strength_rule="any")
+        self.assertEqual(pool["eligible_counts"]["5"], 0)
+
     def test_horizon_direction_is_fit_on_training_not_development(self):
         for split in ("train", "validation"):
             m = self.results[0]["horizons"]["5"][split]
