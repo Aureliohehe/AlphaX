@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphax-research"
+version = "0.1.0"
+description = "Reproducible factor research with Miner, Screener and Trader workflows"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "numpy>=2.2,<2.3",
+    "pandas>=2.3,<2.4",
+    "scipy>=1.15,<1.16",
+    "typing-extensions>=4.15,<5",
+]
+
+[project.optional-dependencies]
+llm = ["langgraph>=0.2", "litellm>=1.40"]
+qlib = ["pyqlib", "xgboost"]
+
+# Scripts retain their existing paths until the shared-package migration.
+[tool.setuptools]
+packages = []

@@ -10,7 +10,7 @@ AlphaX 是一个面向量化研究的多 Agent 项目。Miner 提出并验证候
 
 ## 1. 配置环境
 
-以下命令使用 Bash 或 Zsh，并从仓库根目录执行。使用 Python 3.10 或更新版本。模板流水线使用 NumPy 和 pandas，无需 Docker、券商账户或 API 密钥。
+以下命令使用 Bash 或 Zsh，并从仓库根目录执行。核心锁定环境支持 Python 3.10–3.13。模板流水线使用 NumPy 和 pandas，无需 Docker、券商账户或 API 密钥。
 
 ```bash
 git clone https://github.com/Aureliohehe/AlphaX.git
@@ -19,10 +19,11 @@ cd AlphaX
 python3 --version
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install numpy pandas typing-extensions
+python -m pip install --require-hashes -r requirements/core.lock
+python -m pip install --no-deps --no-build-isolation -e .
+python -m pip check
 
-make test
+make test PYTHON=python
 ```
 
 如果系统默认的 `python3` 低于 3.10，请用较新的解释器创建虚拟环境，例如 `python3.13 -m venv .venv`。如果环境中没有 Make，也可以在两个子目录中各跑一次测试。
@@ -31,6 +32,10 @@ make test
 (cd quant-method/alphacrafter && python -m unittest discover -v)
 (cd quant-method/machine-learn && python -m unittest discover -v)
 ```
+
+核心依赖及其传递依赖固定在 `requirements/core.lock`，安装时校验包哈希。CI 配置在 Python 3.10 和 3.13 上运行同一套测试。测试使用合成数据和模拟的外部模型调用，无需下载行情或配置 API 密钥；真实 LLM、Qlib 与 XGBoost 运行需要另装可选依赖。
+
+只检查完整流水线、空因子池和失败停止时，可运行 `make test-smoke PYTHON=python`。它使用临时目录，不保留实验产物。依赖更新方法见 [requirements 说明](requirements/README.md)，分阶段建设进度见[工程化规划](docs/ENGINEERING_ROADMAP.md)。
 
 ## 2. 准备 S&P 500 数据
 

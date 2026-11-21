@@ -1,0 +1,10 @@
+# Direct dependencies mirror project.dependencies in pyproject.toml.
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.15.3
+typing-extensions==4.15.0
+# dateutil 4 requires Python >=3.11; keep the lock compatible with Python 3.10.
+python-dateutil==2.9.0.post0
+# Build tools for installing the repository without unpinned build isolation.
+setuptools==80.9.0
+wheel==0.45.1
