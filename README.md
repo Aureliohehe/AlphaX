@@ -37,6 +37,17 @@ make test PYTHON=python
 
 只检查完整流水线、空因子池和失败停止时，可运行 `make test-smoke PYTHON=python`。它使用临时目录，不保留实验产物。依赖更新方法见 [requirements 说明](requirements/README.md)，分阶段建设进度见[工程化规划](docs/ENGINEERING_ROADMAP.md)。
 
+要离线跑通并保留可检查产物，可先运行合成数据示例：
+
+```bash
+python quant-method/alphacrafter/run_offline_example.py \
+  --output-dir quant-method/machine-learn/data/qlib/offline_example
+```
+
+查看输出目录中的 `pipeline/status.json`、`pipeline/manifest.json` 和 `pipeline/trader/selection.json`。示例故意构造了具有预测关系的数据，收益仅用于验证程序执行。输出目录必须是新目录，重复运行不会覆盖已有产物。
+
+可选 LLM／Qlib 环境的锁定安装、真实库离线集成检查和静态检查见 [requirements 说明](requirements/README.md#可选运行依赖与静态检查)。
+
 ## 2. 准备 S&P 500 数据
 
 Git 仓库包含成分快照和行情清单。完整行情、特征缓存和回测产物保存在本地 `quant-method/machine-learn/data/` 下。如果已有下面的特征面板及日历文件，可直接进入第 3 步。下载需要联网，完整特征文件可能超过 1 GB。
@@ -85,10 +96,12 @@ python "$AC/run_pipeline.py" \
 
 ### 用 DeepSeek 和 LangGraph 挖因子
 
-在同一个虚拟环境中安装 LangGraph，将 `DEEPSEEK_API_KEY` 设置为你的密钥，然后运行独立 Miner。以下命令沿用第 2 步的数据路径。
+在 Python 3.13 虚拟环境中安装锁定的 LLM 依赖，将 `DEEPSEEK_API_KEY` 设置为你的密钥，然后运行独立 Miner。以下命令沿用第 2 步的数据路径；其他 Python 版本请先参考[依赖环境说明](requirements/README.md)。
 
 ```bash
-python -m pip install -r "$AC/requirements.txt"
+python -m pip install --require-hashes -r requirements/core.lock
+python -m pip install --no-build-isolation --require-hashes -r requirements/llm.lock
+python -m pip install --no-deps --no-build-isolation -e '.[llm]'
 export DEEPSEEK_API_KEY='替换成你的密钥'
 
 python "$AC/miner_lite.py" \

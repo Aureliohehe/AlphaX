@@ -1,0 +1,4 @@
+# Reference optional environment: CPython 3.12 on Linux x86_64.
+-r core.in
+pyqlib==0.9.7
+xgboost==3.4.1

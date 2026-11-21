@@ -1,0 +1,4 @@
+# Reference optional environment: CPython 3.13 on Linux x86_64.
+-r core.in
+langgraph==1.2.2
+litellm==1.81.0
