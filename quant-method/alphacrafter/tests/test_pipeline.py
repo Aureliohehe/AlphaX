@@ -5,6 +5,8 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -250,6 +252,131 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(run["failed_stage"], status["stage"])
             self.assertIn(f"logs/{status['stage']}.log", run["artifacts"])
             self.assertIsNone(run["metrics"]["cumulative_return"])
+
+    def run_with_hook(self, script, args):
+        return subprocess.run(
+            [sys.executable, "-c", script, *map(str, args)],
+            cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True, timeout=30,
+        )
+
+    def test_resume_skips_committed_round_and_recomputes_partial_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = self.prepare(root)
+            args = self.arguments(root, panel)
+            out = root / "out"
+            stopped = self.run_with_hook("""
+import os
+from run_pipeline import Pipeline, main
+original = Pipeline.mine
+def stop_after_commit(self, round_plan):
+    original(self, round_plan)
+    os._exit(73)
+Pipeline.mine = stop_after_commit
+main()
+""", args)
+            self.assertEqual(stopped.returncode, 73, stopped.stderr)
+            plan = json.loads((out / "plan.json").read_text())
+            first, second = [row["as_of"] for row in plan["rounds"][:2]]
+            first_checkpoint = (out / f"checkpoints/{first}.json").read_bytes()
+            manifest = (out / "manifest.json").read_bytes()
+            snapshot = out / f"snapshots/{first}.json"
+            before_snapshot = snapshot.read_bytes()
+
+            wrong_config = run_cli("run_pipeline.py", *args, "--resume", "--max-temporal", 1, check=False)
+            self.assertIn("configuration", wrong_config.stderr)
+            input_file = root / "features.csv"
+            saved_input = input_file.read_bytes()
+            input_file.write_bytes(saved_input + b"\n")
+            wrong_input = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("inputs", wrong_input.stderr)
+            input_file.write_bytes(saved_input)
+            snapshot.write_bytes(before_snapshot + b"\n")
+            changed = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("Committed Miner snapshot or registry changed", changed.stderr)
+            snapshot.write_bytes(before_snapshot)
+            self.assertFalse((out / "attempts").exists())
+
+            stopped = self.run_with_hook("""
+import os
+import run_pipeline
+original = run_pipeline.publish_json
+def stop_before_checkpoint(path, payload):
+    if path.parent.name == "checkpoints" and "round" in payload:
+        os._exit(74)
+    return original(path, payload)
+run_pipeline.publish_json = stop_before_checkpoint
+run_pipeline.main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 74, stopped.stderr)
+            self.assertFalse((out / f"checkpoints/{second}.json").exists())
+            self.assertTrue((out / f"snapshots/{second}.json").exists())
+            self.assertTrue((out / f".staging/{second}").is_dir())
+
+            run_cli("run_pipeline.py", *args, "--resume")
+            run_cli("run_pipeline.py", *self.arguments(root, panel, output="continuous"))
+            self.assertEqual((out / f"checkpoints/{first}.json").read_bytes(), first_checkpoint)
+            self.assertEqual((out / "manifest.json").read_bytes(), manifest)
+            self.assertEqual(snapshot.read_bytes(), before_snapshot)
+            self.assertEqual(len(list((out / "attempts").glob(f"*/snapshots/{second}.json"))), 1)
+            self.assertEqual(len(list((out / "logs").glob(f"resume-*/miner_{second}.log"))), 2)
+            events = [json.loads(line) for line in (out / "events.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(item.get("name") == f"miner_{first}" and item["event"] == "step_started"
+                                 for item in events), 1)
+            self.assertTrue(all(item["completed_rounds"] == [first] for item in events if item["event"] == "resumed"))
+            continuous = root / "continuous"
+            for row in plan["rounds"]:
+                relative = f"snapshots/{row['as_of']}.json"
+                self.assertEqual((out / relative).read_bytes(), (continuous / relative).read_bytes())
+            for relative in ("rounds.csv", "trader/selection.json", "trader/holdout_returns.csv", "summary.json"):
+                self.assertEqual((out / relative).read_bytes(), (continuous / relative).read_bytes())
+
+    def test_resume_is_rejected_at_screener_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = self.prepare(root, periods=60)
+            args = self.arguments(root, panel, initial=39, selection_end=49, holdout_end=59, interval=90)
+            stopped = self.run_with_hook("""
+import os
+from run_pipeline import Pipeline, main
+Pipeline.screen = lambda self, phase: os._exit(75)
+main()
+""", args)
+            self.assertEqual(stopped.returncode, 75, stopped.stderr)
+            out = root / "out"
+            self.assertTrue((out / "checkpoints/selection_closed.json").is_file())
+            self.assertFalse((out / "screener_selection").exists())
+            resumed = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("before the selection Screener starts", resumed.stderr)
+            self.assertFalse((out / "attempts").exists())
+
+    def test_run_directory_allows_only_one_writer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = self.prepare(root, periods=60)
+            args = self.arguments(root, panel, initial=39, selection_end=49, holdout_end=59, interval=90)
+            script = """
+import sys
+from run_pipeline import Pipeline, main
+def pause(self, pinned_inputs, resume):
+    print("locked", flush=True)
+    sys.stdin.readline()
+    sys.exit(0)
+Pipeline.run_locked = pause
+main()
+"""
+            holder = subprocess.Popen(
+                [sys.executable, "-c", script, *map(str, args)],
+                cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                self.assertEqual(holder.stdout.readline().strip(), "locked")
+                contender = run_cli("run_pipeline.py", *args, check=False)
+                self.assertIn("Another process is already writing", contender.stderr)
+                self.assertFalse((root / "out/manifest.json").exists())
+            finally:
+                holder.communicate(input="\n", timeout=10)
 
 
 class TraderMaturityTests(unittest.TestCase):

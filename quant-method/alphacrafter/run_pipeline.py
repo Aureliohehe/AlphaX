@@ -3,7 +3,7 @@
 
 Commit the schedule and policy first. Build selection-period snapshots, freeze
 Trader parameters, THEN generate holdout-period snapshots and evaluate once.
-No external LLM calls, retrospective-library bypass, gate overrides or resume.
+Resume is available during the selection-period Miner rounds.
 """
 from __future__ import annotations
 
@@ -14,13 +14,18 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
 
+from alphax.checkpoint import lock_run, publish_json
 from alphax.experiment import artifact_inventory, build_manifest
-from temporal import LABEL_END_COLUMNS, calendar_audit, label_end_source, read_calendar, session_date, snapshot_date
+from temporal import (
+    LABEL_END_COLUMNS, calendar_audit, label_end_source, read_calendar, session_date, snapshot_date,
+    validate_previous_registry,
+)
 from trader_lite import (
     TraderConfig, file_fingerprint, is_feasible, load_inputs, parse_configs,
     select_configuration, simulate, summarize, validate_intervals,
@@ -28,6 +33,7 @@ from trader_lite import (
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIGS = "0.8,0.5,50,25;0.8,0.0,50,50;0.8,1.0,50,0"
+CHECKPOINT_VERSION = 1
 
 
 def iso(value: object) -> str:
@@ -123,7 +129,7 @@ def input_paths(args: argparse.Namespace) -> dict[str, Path]:
 
 def normalized_config(args: argparse.Namespace) -> dict:
     config = {key: value for key, value in vars(args).items()
-              if key not in {"input", "calendar", "candidate_file", "output_dir", "dry_run"}}
+              if key not in {"input", "calendar", "candidate_file", "output_dir", "dry_run", "resume"}}
     for key in ("initial_as_of", "train_start", "selection_start", "selection_end", "holdout_start", "holdout_end"):
         config[key] = iso(config[key])
     config["configs"] = [asdict(trader_config) for trader_config in parse_configs(args.configs)]
@@ -135,6 +141,9 @@ class Pipeline:
         self.args = args
         self.plan = plan
         self.root = args.output_dir.resolve()
+        self.checkpoints = self.root / "checkpoints"
+        self.log_dir = self.root / "logs"
+        self.lock_fd = None
         self.round_results: List[Dict[str, object]] = []
         self.previous_registry = None
         self.completed_artifacts: Dict[str, object] = {}
@@ -147,11 +156,14 @@ class Pipeline:
     def step(self, name: str, script: str, arguments: Sequence[object]) -> None:
         self.stage = name
         command = [sys.executable, str(HERE / script), *map(str, arguments)]
-        logfile = self.root / "logs" / f"{name}.log"
+        logfile = self.log_dir / f"{name}.log"
         logfile.parent.mkdir(parents=True, exist_ok=True)
         self.event({"event": "step_started", "name": name, "argv": command, "log": str(logfile.relative_to(self.root))})
         with logfile.open("x") as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=self.args.step_timeout)
+            descriptors = () if self.lock_fd is None else (self.lock_fd,)
+            result = subprocess.run(
+                command, stdout=log, stderr=subprocess.STDOUT, timeout=self.args.step_timeout, pass_fds=descriptors,
+            )
         self.event({"event": "step_finished", "name": name, "returncode": result.returncode})
         if result.returncode:
             raise RuntimeError(f"{name} failed ({result.returncode}); see {logfile}")
@@ -160,16 +172,20 @@ class Pipeline:
         cutoff = round_plan["as_of"]
         self.stage = f"miner_{cutoff}"
         destination = self.root / "miner" / cutoff
-        destination.mkdir(parents=True)
+        snapshot_dir = self.root / "snapshots"
+        staging = self.root / ".staging" / cutoff if round_plan["phase"] == "selection" else None
+        output = staging / "miner" if staging else destination
+        snapshots = staging / "snapshots" if staging else snapshot_dir
+        output.mkdir(parents=True)
         # Miner --registry is read/write. Copy the predecessor into the NEW
         # round, never point it at an archived predecessor's registry itself.
         if self.previous_registry is not None:
             verify_fingerprints(self.completed_artifacts)
-            shutil.copyfile(self.previous_registry, destination / "registry.json")
+            shutil.copyfile(self.previous_registry, output / "registry.json")
         next_day = iso(session_date(cutoff) + pd.Timedelta(days=1))
         arguments = [
-            "--input", self.args.input, "--output-dir", destination,
-            "--snapshot-dir", self.root / "snapshots", "--as-of", cutoff,
+            "--input", self.args.input, "--output-dir", output,
+            "--snapshot-dir", snapshots, "--as-of", cutoff,
             "--train-start", round_plan["train_start"], "--train-end", round_plan["train_end"],
             "--validation-start", round_plan["validation_start"], "--validation-end", cutoff,
             # Miner diagnostics cannot evaluate this future segment at cutoff.
@@ -184,10 +200,46 @@ class Pipeline:
         if self.args.calendar:
             arguments.extend(["--calendar", self.args.calendar])
         self.step(self.stage, "miner_lite.py", arguments)
-        snapshot = self.root / "snapshots" / f"{cutoff}.json"
+        snapshot = snapshots / f"{cutoff}.json"
+        registry = output / "registry.json"
+        row = self.round_record(round_plan, snapshot, registry)
+        if staging:
+            published_snapshot = snapshot_dir / snapshot.name
+            # Preserve the Miner registry's existing public snapshot path.
+            payload = json.loads(registry.read_text())
+            payload["snapshot_file"] = str(published_snapshot)
+            registry.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=True) + "\n")
+            for target in (destination, published_snapshot):
+                if target.exists() or target.is_symlink():
+                    raise ValueError(f"Cannot publish over existing Miner output: {target}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+            output.rename(destination)
+            snapshot.rename(published_snapshot)
+            snapshot, registry = published_snapshot, destination / "registry.json"
+            checkpoint = self.checkpoints / f"{cutoff}.json"
+            publish_json(checkpoint, {"version": CHECKPOINT_VERSION, "round": row,
+                                      "files": self.relative_fingerprints([snapshot, registry])})
+            self.completed_artifacts.update(fingerprint_set([checkpoint]))
+        self.register_round(row, snapshot, registry)
+        if staging:
+            # The snapshot subdirectory and staging directory are empty after
+            # publication. A crash here leaves only harmless empty directories.
+            snapshots.rmdir()
+            staging.rmdir()
+        self.event({"event": "snapshot_completed", **row})
+
+    def round_record(self, round_plan: dict, snapshot: Path, registry: Path) -> dict:
+        cutoff = round_plan["as_of"]
         payload = json.loads(snapshot.read_text())
         if snapshot_date(payload) != session_date(cutoff):
             raise ValueError("Miner snapshot cutoff disagrees with committed schedule")
+        registry_payload = json.loads(registry.read_text())
+        validate_previous_registry(registry_payload, cutoff)
+        if session_date(registry_payload["as_of"]) != session_date(cutoff):
+            raise ValueError("Miner registry cutoff disagrees with committed schedule")
+        expected_history = [row["as_of"] for row in self.round_results] + [cutoff]
+        if [entry["as_of"] for entry in registry_payload["run_history"]] != expected_history:
+            raise ValueError("Miner registry history disagrees with committed schedule")
         audit = payload["temporal_audit"]
         for horizon in ("1", "5"):
             if audit["segments"][horizon]["backtest"]["eligible_rows"]:
@@ -198,7 +250,7 @@ class Pipeline:
                 if maturity is not None and session_date(maturity) > session_date(boundary):
                     raise ValueError("Miner label maturity crossed a committed segment boundary")
         maintenance = payload["maintenance"]
-        row = {
+        return {
             **round_plan,
             "active_factors": len(payload["factors"]),
             "passed_current_gates": maintenance["current_round_gate_pass_count"],
@@ -206,10 +258,94 @@ class Pipeline:
             "pruned": len(maintenance["pruned"]),
             "snapshot_sha256": file_fingerprint(snapshot)["sha256"],
         }
+
+    def register_round(self, row: dict, snapshot: Path, registry: Path) -> None:
         self.round_results.append(row)
-        self.previous_registry = destination / "registry.json"
-        self.completed_artifacts.update(fingerprint_set([snapshot, self.previous_registry]))
-        self.event({"event": "snapshot_completed", **row})
+        self.previous_registry = registry
+        self.completed_artifacts.update(fingerprint_set([snapshot, registry]))
+
+    def relative_fingerprints(self, paths: Sequence[Path]) -> dict:
+        return {path.relative_to(self.root).as_posix(): {
+            key: value for key, value in file_fingerprint(path).items() if key != "path"
+        } for path in paths}
+
+    def restore_miner(self, manifest: dict, selection_rounds: list[dict]) -> None:
+        boundary = ("checkpoints/selection_closed.json", "screener_selection", "trader",
+                    "screener_holdout", "summary.json", "rounds.csv")
+        if any((self.root / item).exists() for item in boundary):
+            raise ValueError("Resume is limited to Miner rounds before the selection Screener starts")
+        status = self.root / "status.json"
+        if status.exists() and json.loads(status.read_text()).get("status") != "failed":
+            raise ValueError("Resume requires an interrupted or failed Miner run")
+        initial = self.checkpoints / "run.json"
+        if not initial.is_file():
+            raise ValueError("No initialized Miner checkpoints in this run")
+        manifest_path, plan_path = self.root / "manifest.json", self.root / "plan.json"
+        original = json.loads(manifest_path.read_text())
+        if json.loads(initial.read_text()) != {
+            "version": CHECKPOINT_VERSION, "run_id": original["run_id"],
+            "files": self.relative_fingerprints([manifest_path, plan_path]),
+        }:
+            raise ValueError("Resume manifest or plan no longer matches its initialization checkpoint")
+        if (original["experiment_fingerprint"] != manifest["experiment_fingerprint"]
+                or original["fingerprints"] != manifest["fingerprints"]
+                or json.loads(plan_path.read_text()) != self.plan):
+            raise ValueError("Resume inputs, configuration, code, runtime, or plan changed")
+        self.completed_artifacts.update(fingerprint_set([manifest_path, plan_path, initial]))
+
+        checkpoint_names = {path.name for path in self.checkpoints.glob("*.json")} - {"run.json"}
+        committed = selection_rounds[:len(checkpoint_names)]
+        if checkpoint_names != {f"{row['as_of']}.json" for row in committed}:
+            raise ValueError("Miner checkpoints must be a contiguous prefix of the selection plan")
+        for round_plan in committed:
+            cutoff = round_plan["as_of"]
+            checkpoint = self.checkpoints / f"{cutoff}.json"
+            snapshot = self.root / "snapshots" / checkpoint.name
+            registry = self.root / "miner" / cutoff / "registry.json"
+            record = json.loads(checkpoint.read_text())
+            if record.get("version") != CHECKPOINT_VERSION or record.get("files") != self.relative_fingerprints([snapshot, registry]):
+                raise ValueError(f"Committed Miner snapshot or registry changed for {cutoff}")
+            row = self.round_record(round_plan, snapshot, registry)
+            if row != record.get("round"):
+                raise ValueError(f"Miner checkpoint disagrees with the committed round {cutoff}")
+            self.completed_artifacts.update(fingerprint_set([checkpoint]))
+            self.register_round(row, snapshot, registry)
+
+        completed_dates = {row["as_of"] for row in self.round_results}
+        allowed_dates = completed_dates.copy()
+        partial = []
+        if len(committed) < len(selection_rounds):
+            cutoff = selection_rounds[len(committed)]["as_of"]
+            stage = self.root / ".staging" / cutoff
+            if stage.is_dir() and not stage.is_symlink():
+                allowed_dates.add(cutoff)
+                partial = [self.root / "miner" / cutoff, self.root / "snapshots" / f"{cutoff}.json", stage]
+        self.check_resume_archive(completed_dates, allowed_dates)
+        staged = self.root / ".staging"
+        if staged.exists() and not {path.name for path in staged.iterdir()} <= allowed_dates:
+            raise ValueError("Unexpected staged Miner rounds for resume")
+
+        attempts = self.root / "attempts"
+        attempts.mkdir(exist_ok=True)
+        archive = Path(mkdtemp(prefix="resume-", dir=attempts))
+        # Move the staging directory last. If this cleanup is itself
+        # interrupted, it still identifies any remaining partial publication.
+        for path in [status, self.root / "artifacts.json", *partial]:
+            if path.exists() or path.is_symlink():
+                destination = archive / path.relative_to(self.root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                path.rename(destination)
+        self.log_dir = self.root / "logs" / archive.name
+        self.event({"event": "resumed", "run_id": original["run_id"],
+                    "completed_rounds": [row["as_of"] for row in self.round_results],
+                    "previous_attempt": str(archive.relative_to(self.root))})
+
+    def check_resume_archive(self, completed: set[str], allowed: set[str]) -> None:
+        for folder, suffix in (("miner", ""), ("snapshots", ".json")):
+            archive = self.root / folder
+            actual = {path.name for path in archive.iterdir()} if archive.exists() else set()
+            if not {day + suffix for day in completed} <= actual <= {day + suffix for day in allowed}:
+                raise ValueError(f"Unexpected {folder} archive contents for Miner resume")
 
     def verify_archive(self, phase: str) -> None:
         """Reject extra snapshots, not just modifications of known files."""
@@ -314,9 +450,22 @@ class Pipeline:
         }
 
     def run(self, pinned_inputs: dict | None = None) -> Dict[str, object]:
-        if self.root.exists() and (not self.root.is_dir() or any(self.root.iterdir())):
-            raise ValueError("Output directory must be new or empty; completed/failed runs are never overwritten")
-        self.root.mkdir(parents=True, exist_ok=True)
+        resume = getattr(self.args, "resume", False)
+        if resume:
+            if not self.root.is_dir():
+                raise ValueError("Resume requires an existing output directory")
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+        with lock_run(self.root) as fd:
+            self.lock_fd = fd
+            try:
+                if not resume and any(self.root.iterdir()):
+                    raise ValueError("Output directory must be new or empty; existing runs are never overwritten without --resume")
+                return self.run_locked(pinned_inputs, resume)
+            finally:
+                self.lock_fd = None
+
+    def run_locked(self, pinned_inputs: dict | None, resume: bool) -> dict:
         checkout = HERE.parents[1]
         inputs = input_paths(self.args)
         if pinned_inputs is None:
@@ -324,6 +473,7 @@ class Pipeline:
         code = [HERE / name for name in (
             "run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py",
             "temporal.py", "admission.py", "alphax/__init__.py", "alphax/factor_dsl.py", "alphax/experiment.py",
+            "alphax/checkpoint.py",
         )]
         code.append(HERE.parent / "machine-learn/data_contract.py")
         pinned = {**pinned_inputs, **fingerprint_set(code)}
@@ -334,16 +484,26 @@ class Pipeline:
             {path.relative_to(checkout).as_posix(): pinned[str(path.resolve())] for path in code},
             pinned, self.plan, checkout,
         )
-        manifest_path = self.root / "manifest.json"
-        # Opening exclusively claims the run directory before any other output.
-        write_json_new(manifest_path, manifest)
+        selection_rounds = [row for row in self.plan["rounds"] if row["phase"] == "selection"]
+        if resume:
+            verify_fingerprints(pinned)
+            self.restore_miner(manifest, selection_rounds)
+        else:
+            manifest_path, plan_path = self.root / "manifest.json", self.root / "plan.json"
+            publish_json(manifest_path, manifest)
+            publish_json(plan_path, self.plan)
+            initial = self.checkpoints / "run.json"
+            publish_json(initial, {"version": CHECKPOINT_VERSION, "run_id": manifest["run_id"],
+                                   "files": self.relative_fingerprints([manifest_path, plan_path])})
+            self.completed_artifacts.update(fingerprint_set([manifest_path, plan_path, initial]))
         try:
-            plan_path = self.root / "plan.json"
-            write_json_new(plan_path, self.plan)
-            self.completed_artifacts.update(fingerprint_set([plan_path, manifest_path]))
-            for round_plan in self.plan["rounds"]:
-                if round_plan["phase"] == "selection":
-                    self.mine(round_plan)
+            for round_plan in selection_rounds[len(self.round_results):]:
+                self.mine(round_plan)
+            self.verify_archive("selection")
+            verify_fingerprints(pinned)
+            boundary = self.checkpoints / "selection_closed.json"
+            publish_json(boundary, {"version": CHECKPOINT_VERSION, "stage": "screener_selection"})
+            self.completed_artifacts.update(fingerprint_set([boundary]))
             selection_predictions = self.screen("selection")
             selection = self.freeze_selection(selection_predictions)
             verify_fingerprints(pinned)
@@ -357,11 +517,11 @@ class Pipeline:
             verify_fingerprints(self.completed_artifacts)
             pd.DataFrame(self.round_results).to_csv(self.root / "rounds.csv", index=False)
             write_json_new(self.root / "summary.json", summary)
-            write_json_new(self.root / "artifacts.json", artifact_inventory(self.root))
+            publish_json(self.root / "artifacts.json", artifact_inventory(self.root))
             self.event({"event": "completed"})
             # This is the final commit marker. Never announce a successful
             # status before the event log and result files have been written.
-            write_json_new(self.root / "status.json", {"status": "completed"})
+            publish_json(self.root / "status.json", {"status": "completed"})
             return summary
         except (Exception, KeyboardInterrupt) as exc:
             failure = {"status": "failed", "stage": self.stage, "error": f"{type(exc).__name__}: {exc}"}
@@ -373,12 +533,12 @@ class Pipeline:
                 pass
             if not (self.root / "artifacts.json").exists():
                 try:
-                    write_json_new(self.root / "artifacts.json", artifact_inventory(self.root))
+                    publish_json(self.root / "artifacts.json", artifact_inventory(self.root))
                 except OSError:
                     pass
             if not (self.root / "status.json").exists():
                 try:
-                    write_json_new(self.root / "status.json", failure)
+                    publish_json(self.root / "status.json", failure)
                 except OSError:
                     pass
             raise
@@ -410,7 +570,9 @@ def main() -> None:
     parser.add_argument("--annual-risk-free-rate", type=float, default=.0381)
     parser.add_argument("--initial-cash", type=float, default=1_000_000.)
     parser.add_argument("--step-timeout", type=float, default=None, help="Optional subprocess timeout in seconds; failures preserve logs")
-    parser.add_argument("--dry-run", action="store_true", help="Validate and print the schedule without creating output or running agents")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Validate and print the schedule without creating output or running agents")
+    mode.add_argument("--resume", action="store_true", help="Resume an existing run before the selection Screener starts")
     args = parser.parse_args()
     try:
         args.input = args.input.resolve(strict=True)
