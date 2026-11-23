@@ -63,18 +63,19 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 output/
   plan.json                  # 日期与移动窗口计划
   manifest.json              # 运行 ID、实验条件指纹、配置、输入/代码及依赖版本
-  checkpoints/               # 初始化清单、验证期 Miner 轮次、Screener 开始边界
+  checkpoints/               # 初始化清单、选择期 Miner 轮次、Screener 和留出期开始标记
   attempts/                  # 显式续跑时归档的上次状态、产物索引和未提交文件
   artifacts.json             # 归档产物列表，路径相对于本次运行目录
   events.jsonl               # 子进程命令、完成事件、冻结顺序、错误
   logs/                      # 每个 Miner/Screener 子进程的 stdout/stderr
   miner/YYYY-MM-DD/          # 每轮独立结果与 registry
   snapshots/YYYY-MM-DD.json  # 不可覆盖的快照
-  screener_selection/        # Trader 验证期信号
+  screener_selection/        # Trader 验证期信号和 checkpoint.json
   screener_holdout/          # 留出期信号
   trader/
     selection_trial_N.csv    # 最多三个验证组合的逐日账本
     selection.json           # 留出生成前冻结的选择，含信号/快照哈希
+    checkpoint.json          # 冻结决定、试验账本及上游输入指纹
     holdout_returns.csv
     holdout_positions.csv
   rounds.csv                 # 各轮训练/准入窗口、通过/活跃/淘汰数
@@ -88,14 +89,15 @@ output/
 - 成功状态在结果、产物清单与事件日志写完后才落盘。失败记录会尽可能保存当时已有的产物。读取收益时以 `status.json` 的 `completed` 为准。
 - `--dry-run` 只检查计划及基本配置，不替代真实的候选 AST 校验、数据质量检查或收益评估。
 
-## 续跑验证期 Miner
+## 续跑选择期
 
-如果进程在验证期 Miner 轮次中断或失败，使用原命令、原输出目录和原参数，追加 `--resume`。续跑保留原运行 ID，要求已有 `checkpoints/run.json`。程序会校验计划、配置、代码、依赖版本、输入内容和已提交的轮次指纹。
+如果进程在选择期 Miner、Screener 或 Trader 冻结阶段中断或失败，使用原命令、原输出目录和原参数，追加 `--resume`。续跑保留原运行 ID，要求已有相同版本的 `checkpoints/run.json`。程序会校验计划、配置、代码、依赖版本、输入内容和已提交产物的指纹。
 
 - Miner 先在暂存目录执行。核验快照、注册表和标签边界后，再发布产物和轮次检查点。续跑只跳过已有检查点且指纹仍一致的轮次。
-- 未提交的轮次会移到 `attempts/` 下并重新执行。过去的日志继续保留，本次日志写到 `logs/resume-*/`。
+- Screener 的预测、注册表和检查点一同发布。Trader 的试验账本、冻结决定和检查点也一同发布。续跑会复用核验通过的结果，包括无可行策略时的空仓决定。
+- 未提交的轮次或阶段移到 `attempts/` 下并重新执行。过去的日志继续保留，本次日志写到 `logs/resume-*/`。
 - 运行目录需要支持 POSIX 文件锁和硬链接。子进程仍在使用目录时，另一进程会收到锁冲突。
-- 在选择期 Screener 启动前会写入 `checkpoints/selection_closed.json`。达到这个边界后，或使用早期没有初始化检查点的运行目录时，需要新开运行。
+- 在留出期启动前会写入 `checkpoints/holdout_started.json`。达到这个边界后需要新开运行。只有中断且使用同一代码版本和检查点格式的运行可续跑。
 
 ## 查找和归档实验
 

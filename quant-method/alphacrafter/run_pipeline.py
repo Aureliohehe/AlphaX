@@ -3,7 +3,7 @@
 
 Commit the schedule and policy first. Build selection-period snapshots, freeze
 Trader parameters, THEN generate holdout-period snapshots and evaluate once.
-Resume is available during the selection-period Miner rounds.
+Resume is available through strategy selection, before holdout starts.
 """
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ from trader_lite import (
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIGS = "0.8,0.5,50,25;0.8,0.0,50,50;0.8,1.0,50,0"
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
+SCREENER_SELECTION = "screener_selection"
+TRADER_SELECTION = "trader_selection"
 
 
 def iso(value: object) -> str:
@@ -269,14 +271,14 @@ class Pipeline:
             key: value for key, value in file_fingerprint(path).items() if key != "path"
         } for path in paths}
 
-    def restore_miner(self, manifest: dict, selection_rounds: list[dict]) -> None:
-        boundary = ("checkpoints/selection_closed.json", "screener_selection", "trader",
-                    "screener_holdout", "summary.json", "rounds.csv")
+    def restore_selection(self, manifest: dict, selection_rounds: list[dict]) -> tuple[Path | None, Path | None]:
+        boundary = ("checkpoints/holdout_started.json", "screener_holdout", "summary.json", "rounds.csv",
+                    "trader/holdout_returns.csv", "trader/holdout_positions.csv")
         if any((self.root / item).exists() for item in boundary):
-            raise ValueError("Resume is limited to Miner rounds before the selection Screener starts")
+            raise ValueError("Resume is limited to runs before the holdout starts")
         status = self.root / "status.json"
         if status.exists() and json.loads(status.read_text()).get("status") != "failed":
-            raise ValueError("Resume requires an interrupted or failed Miner run")
+            raise ValueError("Resume requires an interrupted or failed run")
         initial = self.checkpoints / "run.json"
         if not initial.is_file():
             raise ValueError("No initialized Miner checkpoints in this run")
@@ -293,7 +295,9 @@ class Pipeline:
             raise ValueError("Resume inputs, configuration, code, runtime, or plan changed")
         self.completed_artifacts.update(fingerprint_set([manifest_path, plan_path, initial]))
 
-        checkpoint_names = {path.name for path in self.checkpoints.glob("*.json")} - {"run.json"}
+        selection_marker = self.checkpoints / "selection_closed.json"
+        selection_started = selection_marker.exists()
+        checkpoint_names = {path.name for path in self.checkpoints.glob("*.json")} - {"run.json", selection_marker.name}
         committed = selection_rounds[:len(checkpoint_names)]
         if checkpoint_names != {f"{row['as_of']}.json" for row in committed}:
             raise ValueError("Miner checkpoints must be a contiguous prefix of the selection plan")
@@ -321,9 +325,24 @@ class Pipeline:
                 allowed_dates.add(cutoff)
                 partial = [self.root / "miner" / cutoff, self.root / "snapshots" / f"{cutoff}.json", stage]
         self.check_resume_archive(completed_dates, allowed_dates)
+        allowed_stages = allowed_dates.copy()
+        predictions = selection = None
+        if selection_started:
+            if (len(committed) != len(selection_rounds)
+                    or json.loads(selection_marker.read_text()) != self.selection_started_record()):
+                raise ValueError("Selection Screener marker disagrees with the committed Miner rounds")
+            self.completed_artifacts.update(fingerprint_set([selection_marker]))
+            predictions, selection = self.restore_selection_outputs()
+            if selection is None:
+                pending = TRADER_SELECTION if predictions else SCREENER_SELECTION
+                allowed_stages.add(pending)
+                partial.append(self.root / ".staging" / pending)
+        elif any((self.root / name).exists() for name in (SCREENER_SELECTION, "trader")):
+            raise ValueError("Selection output exists without the selection start marker")
+
         staged = self.root / ".staging"
-        if staged.exists() and not {path.name for path in staged.iterdir()} <= allowed_dates:
-            raise ValueError("Unexpected staged Miner rounds for resume")
+        if staged.exists() and not {path.name for path in staged.iterdir()} <= allowed_stages:
+            raise ValueError("Unexpected staged rounds or selection outputs for resume")
 
         attempts = self.root / "attempts"
         attempts.mkdir(exist_ok=True)
@@ -338,7 +357,82 @@ class Pipeline:
         self.log_dir = self.root / "logs" / archive.name
         self.event({"event": "resumed", "run_id": original["run_id"],
                     "completed_rounds": [row["as_of"] for row in self.round_results],
+                    "screener_restored": predictions is not None, "trader_frozen_restored": selection is not None,
                     "previous_attempt": str(archive.relative_to(self.root))})
+        return predictions, selection
+
+    def snapshot_hashes(self) -> dict:
+        return {row["as_of"]: row["snapshot_sha256"] for row in self.round_results}
+
+    def selection_started_record(self) -> dict:
+        return {"version": CHECKPOINT_VERSION, "stage": SCREENER_SELECTION, "snapshot_hashes": self.snapshot_hashes()}
+
+    def selection_stage_record(self, stage: str, output: Path, inputs: dict) -> dict:
+        files = {}
+        for path in sorted(output.iterdir()):
+            if path.name == "checkpoint.json":
+                continue
+            if not path.is_file() or path.is_symlink():
+                raise ValueError(f"Unexpected file in {stage} output: {path.name}")
+            fingerprint = file_fingerprint(path)
+            files[path.name] = {"sha256": fingerprint["sha256"], "bytes": fingerprint["bytes"]}
+        return {"version": CHECKPOINT_VERSION, "stage": stage, "inputs": inputs, "files": files}
+
+    def publish_selection_stage(self, stage: str, output: Path, destination: Path, inputs: dict) -> None:
+        if destination.exists() or destination.is_symlink():
+            raise ValueError(f"Cannot publish over an existing selection stage: {destination}")
+        record = self.selection_stage_record(stage, output, inputs)
+        publish_json(output / "checkpoint.json", record)
+        # The directory rename publishes the stage files and checkpoint together.
+        output.rename(destination)
+        self.pin_selection_stage(destination, record)
+
+    def pin_selection_stage(self, directory: Path, record: dict) -> None:
+        self.completed_artifacts.update(fingerprint_set([
+            directory / name for name in (*record["files"], "checkpoint.json")
+        ]))
+
+    def verify_selection_stage(self, stage: str, directory: Path, inputs: dict) -> None:
+        checkpoint = directory / "checkpoint.json"
+        if directory.is_symlink() or checkpoint.is_symlink() or not checkpoint.is_file():
+            raise ValueError(f"Missing committed {stage} checkpoint")
+        record = self.selection_stage_record(stage, directory, inputs)
+        if json.loads(checkpoint.read_text()) != record:
+            raise ValueError(f"Committed {stage} output or inputs changed")
+        self.pin_selection_stage(directory, record)
+
+    def trader_inputs(self, predictions: Path) -> dict:
+        return {
+            "prediction_sha256": file_fingerprint(predictions)["sha256"],
+            "snapshot_hashes": self.snapshot_hashes(),
+            "screener_checkpoint_sha256": file_fingerprint(predictions.with_name("checkpoint.json"))["sha256"],
+        }
+
+    def restore_selection_outputs(self) -> tuple[Path | None, Path | None]:
+        screener = self.root / SCREENER_SELECTION
+        trader = self.root / "trader"
+        if not screener.exists():
+            if trader.exists():
+                raise ValueError("Trader output requires the committed selection Screener")
+            return None, None
+        self.verify_selection_stage(SCREENER_SELECTION, screener, {"snapshot_hashes": self.snapshot_hashes()})
+        self.validate_screen_registry(screener, "selection")
+        predictions = screener / "predictions.csv"
+        if not trader.exists():
+            return predictions, None
+        inputs = self.trader_inputs(predictions)
+        self.verify_selection_stage(TRADER_SELECTION, trader, inputs)
+        selection = trader / "selection.json"
+        frozen = json.loads(selection.read_text())
+        expected = {
+            "selection_window": self.plan["selection"], "frozen_as_of": self.plan["selection"]["end"],
+            "prediction_sha256": inputs["prediction_sha256"], "snapshot_hashes": inputs["snapshot_hashes"],
+        }
+        if any(frozen.get(key) != value for key, value in expected.items()) or frozen.get("status") != (
+            "selected" if frozen.get("selected_config") is not None else "no_feasible_strategy"
+        ):
+            raise ValueError("Frozen Trader decision disagrees with the selection inputs")
+        return predictions, selection
 
     def check_resume_archive(self, completed: set[str], allowed: set[str]) -> None:
         for folder, suffix in (("miner", ""), ("snapshots", ".json")):
@@ -361,7 +455,10 @@ class Pipeline:
         self.stage = f"screener_{phase}"
         self.verify_archive(phase)
         window = self.plan[phase]
-        output = self.root / f"screener_{phase}"
+        destination = self.root / self.stage
+        output = self.root / ".staging" / self.stage if phase == "selection" else destination
+        if phase == "selection":
+            output.mkdir(parents=True)
         arguments = [
             "--input", self.args.input, "--library-history", self.root / "snapshots",
             "--signal-start", window["start"], "--as-of", window["end"],
@@ -372,30 +469,42 @@ class Pipeline:
         if self.args.calendar:
             arguments.extend(["--calendar", self.args.calendar])
         self.step(self.stage, "screener_lite.py", arguments)
+        self.validate_screen_registry(output, phase)
+        predictions = output / "predictions.csv"
+        if phase == "selection":
+            self.verify_archive(phase)
+            if not predictions.is_file():
+                raise ValueError("Selection Screener did not write predictions.csv")
+            self.publish_selection_stage(SCREENER_SELECTION, output, destination, {"snapshot_hashes": self.snapshot_hashes()})
+        else:
+            self.completed_artifacts.update(fingerprint_set([output / "registry.json", predictions]))
+        return destination / predictions.name
+
+    def validate_screen_registry(self, output: Path, phase: str) -> None:
+        window = self.plan[phase]
         registry = json.loads((output / "registry.json").read_text())
         if registry["library_scope"] != "point_in_time_snapshots":
             raise ValueError("Retrospective predictions cannot enter the pipeline")
         if registry["as_of"] != window["end"] or registry["signal_start"] != window["start"]:
             raise ValueError("Screener window differs from the committed schedule")
-        self.completed_artifacts.update(fingerprint_set([output / "registry.json", output / "predictions.csv"]))
-        return output / "predictions.csv"
 
     def freeze_selection(self, predictions: Path) -> Path:
-        self.stage = "trader_selection"
+        self.stage = TRADER_SELECTION
         verify_fingerprints(self.completed_artifacts)
+        inputs = self.trader_inputs(predictions)
         window = self.plan["selection"]
         frame = load_inputs(predictions, self.args.input, as_of=window["end"], calendar_path=self.args.calendar,
                             require_explicit_label_dates=self.args.require_explicit_label_dates)
         results = []
         destination = self.root / "trader"
-        destination.mkdir()
+        output = self.root / ".staging" / TRADER_SELECTION
+        output.mkdir(parents=True)
         for index, config in enumerate(parse_configs(self.args.configs), 1):
             report, _ = simulate(frame, config, window["start"], window["end"], self.args.cost_rate)
-            report.to_csv(destination / f"selection_trial_{index}.csv")
+            report.to_csv(output / f"selection_trial_{index}.csv")
             metrics = summarize(report, self.args.initial_cash, self.args.annual_risk_free_rate)
             results.append({"config": asdict(config), "name": config.name, **metrics})
         selected = select_configuration(results)
-        path = destination / "selection.json"
         frozen = {
             "frozen_as_of": window["end"], "selection_window": window,
             "status": "selected" if selected else "no_feasible_strategy",
@@ -408,11 +517,13 @@ class Pipeline:
             "initial_cash": self.args.initial_cash,
             "label_end_source": label_end_source(frame, 1),
             "calendar_sha256": file_fingerprint(self.args.calendar)["sha256"] if self.args.calendar else None,
-            "prediction_sha256": file_fingerprint(predictions)["sha256"],
-            "snapshot_hashes": {row["as_of"]: row["snapshot_sha256"] for row in self.round_results},
+            "prediction_sha256": inputs["prediction_sha256"],
+            "snapshot_hashes": inputs["snapshot_hashes"],
         }
-        write_json_new(path, frozen)
-        self.completed_artifacts.update(fingerprint_set([path, predictions]))
+        write_json_new(output / "selection.json", frozen)
+        verify_fingerprints(self.completed_artifacts)
+        self.publish_selection_stage(TRADER_SELECTION, output, destination, inputs)
+        path = destination / "selection.json"
         self.event({"event": "trader_frozen", "status": frozen["status"], "sha256": file_fingerprint(path)["sha256"]})
         return path
 
@@ -485,9 +596,10 @@ class Pipeline:
             pinned, self.plan, checkout,
         )
         selection_rounds = [row for row in self.plan["rounds"] if row["phase"] == "selection"]
+        selection_predictions = selection = None
         if resume:
             verify_fingerprints(pinned)
-            self.restore_miner(manifest, selection_rounds)
+            selection_predictions, selection = self.restore_selection(manifest, selection_rounds)
         else:
             manifest_path, plan_path = self.root / "manifest.json", self.root / "plan.json"
             publish_json(manifest_path, manifest)
@@ -502,11 +614,19 @@ class Pipeline:
             self.verify_archive("selection")
             verify_fingerprints(pinned)
             boundary = self.checkpoints / "selection_closed.json"
-            publish_json(boundary, {"version": CHECKPOINT_VERSION, "stage": "screener_selection"})
-            self.completed_artifacts.update(fingerprint_set([boundary]))
-            selection_predictions = self.screen("selection")
-            selection = self.freeze_selection(selection_predictions)
+            if not boundary.exists():
+                publish_json(boundary, self.selection_started_record())
+                self.completed_artifacts.update(fingerprint_set([boundary]))
+            if selection_predictions is None:
+                selection_predictions = self.screen("selection")
+            if selection is None:
+                selection = self.freeze_selection(selection_predictions)
             verify_fingerprints(pinned)
+            verify_fingerprints(self.completed_artifacts)
+            holdout_boundary = self.checkpoints / "holdout_started.json"
+            publish_json(holdout_boundary, {"version": CHECKPOINT_VERSION, "stage": "holdout",
+                                           "trader_checkpoint_sha256": file_fingerprint(selection.with_name("checkpoint.json"))["sha256"]})
+            self.completed_artifacts.update(fingerprint_set([holdout_boundary]))
             for round_plan in self.plan["rounds"]:
                 if round_plan["phase"] == "holdout":
                     self.mine(round_plan)
@@ -572,7 +692,7 @@ def main() -> None:
     parser.add_argument("--step-timeout", type=float, default=None, help="Optional subprocess timeout in seconds; failures preserve logs")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Validate and print the schedule without creating output or running agents")
-    mode.add_argument("--resume", action="store_true", help="Resume an existing run before the selection Screener starts")
+    mode.add_argument("--resume", action="store_true", help="Resume an existing run before the holdout starts")
     args = parser.parse_args()
     try:
         args.input = args.input.resolve(strict=True)
