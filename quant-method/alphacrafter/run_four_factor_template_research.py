@@ -9,7 +9,8 @@ import pandas as pd
 from admission import assess_weekly_substitution
 from cn_portfolio import CNConfig, simulate_cn
 from medium_frequency import load_member_bars
-from miner_lite import Candidate, load_candidates
+from alphax.factor_dsl import Candidate
+from miner_lite import load_candidates
 from run_cn_portfolio_research import load_quotes
 from run_frozen_positive_holdout import audit_ledger
 from run_medium_attribution import trial_metrics

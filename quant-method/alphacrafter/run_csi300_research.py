@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from alphax.factor_dsl import candidate_from_dict
 from csi300_data import build_panel
-from miner_lite import BASELINE_FEATURES, candidate_from_dict, load_candidates
+from miner_lite import BASELINE_FEATURES, load_candidates
 from run_candidate_batch import canonical, failure_reasons, remove_tradable_artifacts
 from trader_lite import file_fingerprint
 from temporal import is_feature_column
@@ -58,7 +59,8 @@ def main():
     calendar = pd.DatetimeIndex(pd.to_datetime((source / "qlib_day.txt").read_text().splitlines()))
     pd.DataFrame({"date": calendar}).to_csv(out / "calendar.csv", index=False)
     inputs = [source / "daily_pv.h5", source / "qlib_csi300.txt", source / "qlib_day.txt", prior,
-              out / "candidates_frozen.json", HERE / "csi300_data.py", Path(__file__), HERE / "miner_lite.py",
+              out / "candidates_frozen.json", HERE / "csi300_data.py", Path(__file__),
+              HERE / "miner_lite.py", HERE / "alphax/factor_dsl.py",
               ML / "build_features.py", ML / "data_contract.py", HERE / "run_candidate_batch.py", HERE / "temporal.py"]
     manifest = {"scope": "retrospective_CSI300_factor_quality_not_executable_returns_or_certified_PIT",
                 "started_at": datetime.now(timezone.utc).isoformat(), "candidate_count": len(unique),

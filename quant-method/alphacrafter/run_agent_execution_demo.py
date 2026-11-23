@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from miner_lite import candidate_from_dict
+from alphax.factor_dsl import candidate_from_dict
 from trader_lite import TraderConfig, file_fingerprint, load_inputs, simulate, summarize
 
 HERE = Path(__file__).resolve().parent
@@ -149,8 +149,10 @@ def main() -> None:
         parser.error("Output directory must be new or empty")
     if pd.Timestamp(args.admission_as_of) >= pd.Timestamp(args.selection_start) or pd.Timestamp(args.selection_start) > pd.Timestamp(args.selection_end):
         parser.error("Admission must precede all demo signal dates")
-    sources = [args.input, args.calendar, HERE / "miner_lite.py", HERE / "screener_lite.py", HERE / "trader_lite.py",
-               HERE / "run_agent_execution_demo.py"]
+    sources = [
+        args.input, args.calendar, HERE / "miner_lite.py", HERE / "alphax/factor_dsl.py",
+        HERE / "screener_lite.py", HERE / "trader_lite.py", HERE / "run_agent_execution_demo.py",
+    ]
     sources += [args.miner_dir / name for name in ("registry.json", "candidate_metrics.json", "candidates.json", "llm_candidate_audit.json", "temporal_audit.json")]
     pinned = {str(path): file_fingerprint(path) for path in sources}
     accepted, decisions = admitted_factors(args.miner_dir, args.admission_as_of)

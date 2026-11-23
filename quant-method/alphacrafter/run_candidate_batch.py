@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from miner_lite import (PAPER_HORIZON_THRESHOLDS, PAPER_MIN_HIT_DEVIATION,
-                        candidate_from_dict, evaluate_candidate_score, validate_candidate)
+from alphax.factor_dsl import candidate_from_dict, evaluate_candidate_score, validate_candidate
+from miner_lite import PAPER_HORIZON_THRESHOLDS, PAPER_MIN_HIT_DEVIATION
 from temporal import read_calendar
 from trader_lite import TraderConfig, file_fingerprint, simulate, summarize
 
@@ -191,7 +191,11 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "candidates.json").write_text(json.dumps(candidates, indent=2) + "\n")
     (args.output_dir / "generation_audit.json").write_text(json.dumps(audit, indent=2) + "\n")
-    paths = [args.input, args.calendar, args.llm_candidates, HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "run_candidate_batch.py", args.output_dir / "candidates.json"]
+    paths = [
+        args.input, args.calendar, args.llm_candidates, HERE / "miner_lite.py",
+        HERE / "alphax/factor_dsl.py", HERE / "trader_lite.py", HERE / "run_candidate_batch.py",
+        args.output_dir / "candidates.json",
+    ]
     fingerprints = {str(p): file_fingerprint(p) for p in paths}
     manifest = {"scope": "retrospective_research_not_fresh_oos_or_tradable_library",
                 "candidate_budget": args.budget, "selected_candidates": len(candidates),

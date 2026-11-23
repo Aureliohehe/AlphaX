@@ -20,9 +20,10 @@ llm = ["langgraph==1.2.2", "litellm==1.81.0"]
 qlib = ["pyqlib==0.9.7", "xgboost==3.4.1"]
 dev = ["ruff==0.14.10"]
 
-# Scripts retain their existing paths until the shared-package migration.
+# Keep the package next to the scripts so direct CLI invocation also works.
 [tool.setuptools]
-packages = []
+packages = ["alphax"]
+package-dir = {alphax = "quant-method/alphacrafter/alphax"}
 
 [tool.ruff]
 target-version = "py310"

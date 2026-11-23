@@ -12,6 +12,21 @@
 
 所有候选通过 `evaluate_candidate_score(candidate, frame, dates=None)` 进入同一个安全 AST 求值器，frame 必须包含原始字段及 date，时间序列算子还需要 ticker。没有隐式标准化、截尾或输入排名；使用原始差值时，需要由候选设计者判断输入尺度是否合理。
 
+## 在 Python 中使用
+
+按[依赖环境说明](../../requirements/README.md)安装项目后，可以直接解析 JSON 解码得到的表达式对象，再对已加载的面板求值。
+
+```python
+from alphax.factor_dsl import evaluate_expression, parse_expression
+
+expression = parse_expression({"op": "rank", "feature": "return_5d"}, frame.columns)
+scores = evaluate_expression(expression, frame)
+```
+
+`parse_expression` 会规范化简写并校验表达式，`validate_expression` 可单独检查规范 AST。已有候选记录可用 `candidate_from_dict` 读取，再传给 `evaluate_candidate_score`。
+
+## 表达式与研究口径
+
 如需保留过去“排名差”的经济含义，应显式写成：
 
 ```json

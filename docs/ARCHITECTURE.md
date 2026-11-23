@@ -39,7 +39,8 @@ CSI300、中低频持仓及 Qlib 三组消融是独立研究分支，不应视�
 | 位置 | 职责 | 主要入口 |
 |---|---|---|
 | `quant-method/machine-learn/` | 数据下载、特征工程、模型基线、Qlib 回测和模型对照实验 | `download_market_data.py`、`build_features.py`、`train_xgboost_qlib.py`、`qlib_portfolio_backtest.py` |
-| `quant-method/alphacrafter/` | 因子表达式、准入、动态筛选、策略验证、时点控制及研究分支 | `miner_lite.py`、`screener_lite.py`、`trader_lite.py`、`run_pipeline.py` |
+| `quant-method/alphacrafter/` | 因子准入、动态筛选、策略验证、时点控制及研究分支 | `miner_lite.py`、`screener_lite.py`、`trader_lite.py`、`run_pipeline.py` |
+| `alphax.factor_dsl` | 共享的因子 JSON 表达式解析、校验与求值 | 安装后直接导入，源码与 AlphaCrafter CLI 同目录 |
 | `machine-learn/data/raw/` | 原始行情、成员记录及来源信息 | 下载和导入脚本生成 |
 | `machine-learn/data/processed/` | 特征面板、标签结束日、日历及清单 | 特征工程生成 |
 | `machine-learn/data/qlib/` | 本地 Qlib provider、模型和实验结果 | 各实验入口生成 |
@@ -113,7 +114,7 @@ LLM 是候选生成和部分筛选判断的可选组件；默认流程无需调�
 
 S&P 500 主数据仍存在当前成分股快照、历史退出成员及部分数据来源时点的限制。具备时间隔离代码不等于数据本身已经通过 point-in-time 认证。详见 [REPRODUCTION_STATUS.md](alphacrafter/REPRODUCTION_STATUS.md) 与 [DATA_PROVENANCE_AUDIT.md](alphacrafter/DATA_PROVENANCE_AUDIT.md)。
 
-从代码组织看，当前仍是脚本型研究仓库：核心算法、CLI、LLM 客户端和注册表维护较多集中在 `miner_lite.py`；Screener 与研究分支直接复用其函数，跨目录依赖部分通过修改 `sys.path` 实现。若后续工程化，可优先抽取数据契约、因子 DSL、评价指标和实验产物接口为共享包，再保留现有脚本作为运行入口。
+因子 DSL 已抽到共享包 `alphax.factor_dsl`，Miner、Screener 与研究分支共用同一份解析和求值实现。评价指标、CLI、LLM 客户端和注册表维护仍集中在 `miner_lite.py`，部分跨目录依赖通过修改 `sys.path` 实现。后续模块拆分见[工程化规划](ENGINEERING_ROADMAP.md)。
 
 ## 8. 阅读与运行入口
 

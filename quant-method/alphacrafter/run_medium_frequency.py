@@ -11,10 +11,11 @@ import pandas as pd
 
 from admission import (HORIZON_RESEARCH_POLICIES, assess_weekly_substitution, build_research_pool,
                        research_failures, strategy_plan)
+from alphax.factor_dsl import evaluate_candidate_score
 from cn_portfolio import simulate_cn
 from medium_frequency import (TRADER_HORIZONS, anchor_mask, daily_rank_ic, factor_panel,
                               load_member_bars, screen_signals)
-from miner_lite import evaluate_candidate_score, evaluate_score, load_candidates, metric_dict
+from miner_lite import evaluate_score, load_candidates, metric_dict
 from run_cn_portfolio_research import load_quotes
 from run_combination_metrics import score_portfolio, top_observations
 from temporal import is_feature_column
@@ -217,8 +218,8 @@ def main():
     write("status.json", {"status": "preparing"})
     inputs = [source / "daily_pv.h5", source / "qlib_csi300.txt", source / "qlib_day.txt",
               Path(__file__), HERE / "medium_frequency.py", HERE / "cn_portfolio.py", HERE / "admission.py",
-              HERE / "miner_lite.py", HERE / "trader_lite.py", HERE / "trader_harness.py",
-              HERE / "run_cn_portfolio_research.py"]
+              HERE / "miner_lite.py", HERE / "alphax/factor_dsl.py", HERE / "trader_lite.py",
+              HERE / "trader_harness.py", HERE / "run_cn_portfolio_research.py"]
     inputs.extend([candidate_path, registry_path, CORE_PATH, HERE / "run_combination_metrics.py"])
     if compare_xgboost:
         inputs.append(HERE / "weekly_xgboost.py")

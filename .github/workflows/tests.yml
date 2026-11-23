@@ -26,6 +26,8 @@ jobs:
           python -m pip install --require-hashes -r requirements/core.lock
           python -m pip install --no-deps --no-build-isolation -e .
           python -m pip check
+      - name: Import the installed factor DSL
+        run: python -I -c "from alphax.factor_dsl import parse_expression, evaluate_expression"
       - name: Run core and offline integration tests
         run: make test PYTHON=python
       - name: Run persistent offline example

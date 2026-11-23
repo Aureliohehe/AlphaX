@@ -6,10 +6,12 @@ import re
 import numpy as np
 import pandas as pd
 
+from alphax.factor_dsl import Candidate, candidate_expression_spec, evaluate_candidate_score
+
 
 def rolling_feedback(frame, candidate, available, targets, label_ends, folds=3):
     # Import lazily so the CLI can reuse the same evaluator without a cycle.
-    from miner_lite import evaluate_candidate_score, evaluate_score, PAPER_HORIZON_THRESHOLDS
+    from miner_lite import PAPER_HORIZON_THRESHOLDS, evaluate_score
 
     dates = frame["date"]
     sessions = np.sort(dates.unique())
@@ -120,8 +122,6 @@ def stable_horizons(report):
 
 def fresh_feature_controls(available, families, ids, count):
     """Spend replacement slots on distinct, previously unused input families."""
-    from miner_lite import Candidate
-
     used_inputs = set().union(*families)
     controls = []
     for index, feature in enumerate(sorted(available)):
@@ -147,7 +147,6 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
     if folds < 2 or frame["date"].nunique() < (folds + 1) * 5:
         raise ValueError("Search needs >=2 folds and >=5 sessions per block")
     accepted, feedback, audit, seen, ids = [], [], [], set(), set()
-    from miner_lite import _candidate_expression_spec
 
     history, families, used_lineages = {}, {}, set()
     spent, missing = 0, 0
@@ -180,7 +179,7 @@ def run_search(propose, frame, available, targets, label_ends, rounds=3, budget=
         prior = history.copy()
         for candidate in proposals:
             cid, parent = candidate.candidate_id, candidate.control_id
-            spec = _candidate_expression_spec(candidate)
+            spec = candidate_expression_spec(candidate)
             family = feature_family(candidate)
             edits = None
             lineage = cid

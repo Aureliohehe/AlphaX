@@ -16,14 +16,13 @@ from typing import Dict, List, Sequence
 
 import pandas as pd
 
+from alphax.factor_dsl import Candidate, evaluate_candidate_score
 from miner_lite import (
     BASELINE_FEATURES,
     META_COLUMNS,
     is_feature_column,
-    Candidate,
     candidate_from_factor,
     cross_section_rank,
-    evaluate_candidate_score,
     evaluate_score,
     template_candidates,
 )

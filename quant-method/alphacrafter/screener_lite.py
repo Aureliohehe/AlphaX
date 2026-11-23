@@ -29,6 +29,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from alphax.factor_dsl import Candidate, evaluate_candidate_score
 from temporal import (
     active_factors_at, is_feature_column, label_end_dates, label_end_source, load_timeline, read_calendar, session_date, snapshot_date, visible_panel,
 )
@@ -36,11 +37,9 @@ from temporal import (
 from miner_lite import (
     BASELINE_FEATURES,
     META_COLUMNS,
-    Candidate,
     _deepseek_completion,
     _deepseek_tool_call,
     candidate_from_factor,
-    evaluate_candidate_score,
     cross_section_rank,
 )
 

@@ -300,7 +300,10 @@ class Pipeline:
             raise ValueError("Output directory must be new or empty; completed/failed runs are never overwritten")
         self.root.mkdir(parents=True, exist_ok=True)
         inputs = [self.args.input] + [path for path in (self.args.candidate_file, self.args.calendar) if path]
-        code = [HERE / name for name in ("run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py", "temporal.py")]
+        code = [HERE / name for name in (
+            "run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py",
+            "temporal.py", "alphax/factor_dsl.py",
+        )]
         code.append(HERE.parent / "machine-learn/data_contract.py")
         pinned = fingerprint_set(inputs + code)
         parameters = {key: str(value) if isinstance(value, Path) else value for key, value in vars(self.args).items()}
