@@ -24,6 +24,16 @@
 
 研究评估按冻结的 5/20 日调仓相位采样，不将每天高度重叠的多日标签当作独立周期；各段按标签结束日 purge。IR 不年化，月频样本量较小，研究资格不等于统计显著性或正式策略资格。
 
+## 查询运行记录
+
+运行清单记录 `--miner-dir` 中的候选和注册表指纹、Miner 截止日、可选特征面板与 XGBoost 配置。报告、策略选择和其他产物可通过 `artifacts.json` 的相对路径查找。
+
+```bash
+python quant-method/alphacrafter/list_experiments.py quant-method/machine-learn/data/qlib
+```
+
+类型为 `medium_frequency_research` 的记录展示 1、5、20 个交易日各自的入池数量和策略状态，区分纯因子研究与策略比较。2022–2023 标记为已使用的策略迭代窗口，2024–2025 单独标记为尚未评估的保留窗口。
+
 ## Screener
 
 新路线使用 `screen_signals`，仅支持这组单字段中低频候选，输出信号和逐次筛选审计：

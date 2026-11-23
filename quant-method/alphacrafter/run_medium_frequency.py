@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
 from admission import (HORIZON_RESEARCH_POLICIES, assess_weekly_substitution, build_research_pool,
                        research_failures, strategy_plan)
+from alphax.experiment import CSI300_DATA_FILES, MEDIUM_RECORD, MEDIUM_SCOPE, artifact_inventory, build_manifest
 from alphax.factor_dsl import evaluate_candidate_score
 from cn_portfolio import simulate_cn
 from medium_frequency import (TRADER_HORIZONS, anchor_mask, daily_rank_ic, factor_panel,
@@ -30,8 +32,8 @@ ML = HERE.parent / "machine-learn"
 
 def miner_candidate_source(directory, cutoff):
     """Use the proposal inventory, then apply the matching-horizon research gate."""
-    registry_path = directory / "registry.json"
-    candidate_path = directory / "candidates.json"
+    registry_path = (directory / "registry.json").resolve()
+    candidate_path = (directory / "candidates.json").resolve()
     registry = json.loads(registry_path.read_text())
     generator = registry.get("generator", "")
     if not isinstance(generator, str):
@@ -188,20 +190,19 @@ def main():
             import xgboost  # noqa: F401
         except ImportError as exc:
             parser.error(f"Install xgboost for weekly XGBoost comparisons: {exc}")
-    out = args.output_dir.resolve()
-    if out.exists():
+    if args.output_dir.exists():
         parser.error("Use a new output directory")
-    source = ML / "data/raw/qlib_csi300_quantaalpha"
-    # Only the research/development window is loaded unless strategy evaluation
-    # is requested. 2024+ raw prices/features/labels are never loaded here.
-    visible_end = "2023-12-31" if args.evaluate_strategies else "2021-12-31"
-    calendar = pd.DatetimeIndex(pd.to_datetime((source / "qlib_day.txt").read_text().splitlines()))
-    first_execution = calendar[calendar >= "2022-01-01"][0]
-    presets = frequency_presets()
-    candidate_path, registry_path, generator, candidate_defs = miner_candidate_source(args.miner_dir, "2021-12-31")
-    if args.compare_weekly_xgboost_additions and not generator.startswith("llm_"):
-        parser.error("--compare-weekly-xgboost-additions requires LLM Miner output")
+    summary = run(args, ML / "data/raw/qlib_csi300_quantaalpha")
+    print(json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+
+
+def run(args: argparse.Namespace, source: Path) -> dict:
+    out = args.output_dir.resolve()
     out.mkdir(parents=True)
+    run_id = str(uuid4())
+    compare_xgboost = args.compare_weekly_xgboost or args.compare_weekly_xgboost_additions
+    weight = args.weekly_xgboost_augmentation_weight
+    method = args.weekly_xgboost_augmentation_method
 
     def clean(value):
         if isinstance(value, dict):
@@ -213,45 +214,90 @@ def main():
         return value
 
     def write(name, data):
-        (out / name).write_text(json.dumps(clean(data), indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+        (out / name).write_text(json.dumps(clean(data), indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
 
-    write("status.json", {"status": "preparing"})
-    inputs = [source / "daily_pv.h5", source / "qlib_csi300.txt", source / "qlib_day.txt",
-              Path(__file__), HERE / "medium_frequency.py", HERE / "cn_portfolio.py", HERE / "admission.py",
-              HERE / "miner_lite.py", HERE / "alphax/factor_dsl.py", HERE / "trader_lite.py",
-              HERE / "trader_harness.py", HERE / "run_cn_portfolio_research.py"]
-    inputs.extend([candidate_path, registry_path, CORE_PATH, HERE / "run_combination_metrics.py"])
-    if compare_xgboost:
-        inputs.append(HERE / "weekly_xgboost.py")
-    if args.feature_panel:
-        inputs.append(args.feature_panel)
-    hashes = {str(p): file_fingerprint(p) for p in inputs}
-    manifest = {"scope": "retrospective_medium_frequency_research_not_live_execution",
-                "created_at": datetime.now(timezone.utc).isoformat(), "sources": hashes,
-                "definitions": candidate_defs, "miner_generator": generator, "horizons": list(TRADER_HORIZONS), "visible_end": visible_end,
-                "label_mode": "execution_open_open", "label_rule": "T-close signal; entry T+1 open; exit T+h+1 open",
-                "research_train": ["2010-01-01", "2018-12-31"], "research_development": ["2019-01-01", "2021-12-31"],
-                "strategy_iteration": ["2022-01-01", "2023-12-31"], "final_reserved": ["2024-01-01", "2025-12-31"],
-                "strategy_iteration_previously_examined": True,
-                "research_sampling": "fixed nonoverlapping horizon anchors aligned to the frozen execution calendar phase",
-                "screening": {"lookback_completed_periods": 12, "minimum_completed_periods": 6, "min_mean_rank_ic": 0.,
-                              "factor_strength_rule": args.factor_strength_rule},
-                "presets": {str(h): asdict(c) for h, c in presets.items()}, "holdout_evaluated": False,
-                "limitations": ["5/20 sessions approximate weekly/monthly intervals, not civil-calendar weeks/months",
-                                "Supplied member/calendar/adjustment provenance not independently PIT certified",
-                                "Adjusted fractional units and approximate opening-gap filters; no actual lots, depth or ST limit reconstruction",
-                                "Exposure is a target; holding locks/blocked exits and market drift can exceed it, while new buys have an exposure budget",
-                                "Phase and terminal wind-down are frozen; factor rank turnover is not portfolio turnover",
-                                "Research admission remains exploratory; 2022–2023 strategy results are iteration data, not fresh independent validation"]}
-    write("manifest.json", manifest)
-    write("definitions_frozen.json", candidate_defs)
-    snapshots = out / "source_snapshot"
-    snapshots.mkdir()
-    for p in inputs:
-        if p.suffix == ".py":
-            shutil.copyfile(p, snapshots / p.name)
+    def set_status(status, **details):
+        write("status.json", {"status": status, "record_type": MEDIUM_RECORD, "run_id": run_id, **details})
+
+    stage = "preparing"
     try:
-        bars, intervals = load_member_bars(source / "daily_pv.h5", source / "qlib_csi300.txt", "2010-01-01", visible_end)
+        set_status(stage)
+        miner_dir = args.miner_dir.resolve()
+        inputs = {
+            **{role: (source / name).resolve() for role, name in CSI300_DATA_FILES.items()},
+            "candidate_file": (miner_dir / "candidates.json").resolve(),
+            "miner_registry": (miner_dir / "registry.json").resolve(),
+            "four_factor_core": CORE_PATH,
+        }
+        if args.feature_panel:
+            inputs["feature_panel"] = args.feature_panel.resolve()
+        checkout = HERE.parents[1]
+        code = [HERE / name for name in (
+            "run_medium_frequency.py", "medium_frequency.py", "cn_portfolio.py", "admission.py",
+            "miner_lite.py", "trader_lite.py", "trader_harness.py", "run_cn_portfolio_research.py",
+            "run_combination_metrics.py", "temporal.py", "weekly_xgboost.py", "alphax/__init__.py",
+            "alphax/factor_dsl.py", "alphax/experiment.py",
+        )] + [ML / "data_contract.py"]
+        input_fingerprints = {role: file_fingerprint(path) for role, path in inputs.items()}
+        source_fingerprints = {path.relative_to(checkout).as_posix(): file_fingerprint(path) for path in code}
+        hashes = {entry["path"]: entry for entry in (*input_fingerprints.values(), *source_fingerprints.values())}
+
+        # The reserve is outside the feature and execution windows in both modes.
+        visible_end = "2023-12-31" if args.evaluate_strategies else "2021-12-31"
+        calendar = pd.DatetimeIndex(pd.to_datetime(inputs["calendar"].read_text().splitlines()))
+        first_execution = calendar[calendar >= "2022-01-01"][0]
+        presets = frequency_presets()
+        candidate_path, registry_path, generator, candidate_defs = miner_candidate_source(miner_dir, "2021-12-31")
+        registry = json.loads(registry_path.read_text())
+        if args.compare_weekly_xgboost_additions and not generator.startswith("llm_"):
+            raise ValueError("--compare-weekly-xgboost-additions requires LLM Miner output")
+        details = {"scope": MEDIUM_SCOPE,
+                    "created_at": datetime.now(timezone.utc).isoformat(), "sources": hashes,
+                    "definitions": candidate_defs, "miner_generator": generator, "horizons": list(TRADER_HORIZONS), "visible_end": visible_end,
+                    "label_mode": "execution_open_open", "label_rule": "T-close signal; entry T+1 open; exit T+h+1 open",
+                    "research_train": ["2010-01-01", "2018-12-31"], "research_development": ["2019-01-01", "2021-12-31"],
+                    "strategy_iteration": ["2022-01-01", "2023-12-31"], "final_reserved": ["2024-01-01", "2025-12-31"],
+                    "strategy_iteration_previously_examined": True,
+                    "research_sampling": "fixed nonoverlapping horizon anchors aligned to the frozen execution calendar phase",
+                    "screening": {"lookback_completed_periods": 12, "minimum_completed_periods": 6, "min_mean_rank_ic": 0.,
+                                  "factor_strength_rule": args.factor_strength_rule},
+                    "presets": {str(h): asdict(c) for h, c in presets.items()}, "holdout_evaluated": False,
+                    "limitations": ["5/20 sessions approximate weekly/monthly intervals, not civil-calendar weeks/months",
+                                    "Supplied member/calendar/adjustment provenance not independently PIT certified",
+                                    "Adjusted fractional units and approximate opening-gap filters; no actual lots, depth or ST limit reconstruction",
+                                    "Exposure is a target; holding locks/blocked exits and market drift can exceed it, while new buys have an exposure budget",
+                                    "Phase and terminal wind-down are frozen; factor rank turnover is not portfolio turnover",
+                                    "Research admission remains exploratory; 2022–2023 strategy results are iteration data, not fresh independent validation"]}
+        parameters = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+        config = {key: value for key, value in parameters.items()
+                  if key not in {"output_dir", "miner_dir", "feature_panel"}}
+        config.update({key: details[key] for key in (
+            "horizons", "visible_end", "label_mode", "screening", "presets",
+            "research_train", "research_development", "strategy_iteration", "final_reserved",
+        )})
+        window = {
+            "runner_version": "medium-frequency-research-v1",
+            "selection": dict(zip(("start", "end"), details["strategy_iteration"])) if args.evaluate_strategies else None,
+            "holdout": None,
+        }
+        extras = ("h5py", "xgboost") if compare_xgboost else ("h5py",)
+        manifest = build_manifest(
+            parameters, config, input_fingerprints, source_fingerprints, hashes, window, checkout,
+            record_type=MEDIUM_RECORD, extra_packages=extras, run_id=run_id,
+        )
+        manifest.update(details)
+        manifest["miner_source"] = {"generator": generator, "as_of": registry["as_of"]}
+        manifest["candidate_provenance"] = "Frozen Miner proposals checked against the research cutoff"
+        write("manifest.json", manifest)
+        write("definitions_frozen.json", candidate_defs)
+        snapshots = out / "source_snapshot"
+        snapshots.mkdir()
+        for path in code:
+            shutil.copyfile(path, snapshots / path.name)
+
+        stage = "building_features"
+        set_status(stage)
+        bars, intervals = load_member_bars(inputs["prices"], inputs["membership"], "2010-01-01", visible_end)
         parts, expected = [], 0
         groups = bars.groupby("ticker", sort=True)
         for i, (ticker, raw) in enumerate(groups, 1):
@@ -279,15 +325,16 @@ def main():
             raise ValueError("Miner expressions must use feature columns, never labels or internal scores")
         missing = sorted(required - set(frame.columns))
         if missing:
-            if args.feature_panel is None:
+            if "feature_panel" not in inputs:
                 raise ValueError("Miner expressions require --feature-panel columns: " + ", ".join(missing))
-            external = pd.read_csv(args.feature_panel, usecols=["date", "ticker", *missing], parse_dates=["date"])
+            external = pd.read_csv(inputs["feature_panel"], usecols=["date", "ticker", *missing], parse_dates=["date"])
             external = external.loc[external.date <= pd.Timestamp(visible_end)]
             frame = frame.merge(external, on=["date", "ticker"], how="left", validate="one_to_one")
         candidates = load_candidates(candidate_path, sorted(required))
         write("feature_audit.json", {"rows": len(frame), "expected_membership_rows": expected,
                                      "max_visible_signal_date": str(frame.date.max().date()), "candidate_inputs": sorted(required)})
-        write("status.json", {"status": "researching_factors"})
+        stage = "researching_factors"
+        set_status(stage)
         results = []
         score_columns = {}
         for index, candidate in enumerate(candidates):
@@ -342,7 +389,8 @@ def main():
         trials = []
         weekly_comparison = None
         if args.evaluate_strategies:
-            write("status.json", {"status": "evaluating_frozen_strategy_iterations"})
+            stage = "evaluating_frozen_strategy_iterations"
+            set_status(stage)
             start, end = manifest["strategy_iteration"]
             previous = calendar[calendar.get_loc(first_execution) - 1]
             if args.compare_weekly_xgboost:
@@ -390,7 +438,7 @@ def main():
                     trials.append({"horizon": h, "status": "not_run_no_research_signals"})
                     continue
                 tickers = set().union(*(set(signals.ticker) for _, _, signals in strategies))
-                quotes = load_quotes(source / "daily_pv.h5", tickers, calendar, start, end)
+                quotes = load_quotes(inputs["prices"], tickers, calendar, start, end)
                 for name, members, signals in strategies:
                     tag = f"{h}d" if name == "screened" else f"{h}d_{name}"
                     signals.to_csv(out / f"signals_{tag}.csv.gz", index=False)
@@ -433,12 +481,13 @@ def main():
             else:
                 variants = [item for item in candidate_defs if item["candidate_id"] not in core]
             addition_scores = {**score_columns, **dict(zip(core, core))}
-            quotes = load_quotes(source / "daily_pv.h5", set(frame.ticker), calendar, start, end)
+            quotes = load_quotes(inputs["prices"], set(frame.ticker), calendar, start, end)
             additions = list(evaluate_factor_additions(frame, addition_scores, core, variants, calendar, quotes,
                                                        presets[5], (start, end), augmentation_weight=weight,
                                                        augmentation_method=method))
             if not additions:
                 raise ValueError("No LLM factor addition produced complete weekly research signals")
+        stage = "finalizing"
         for p, expected_hash in hashes.items():
             if file_fingerprint(Path(p)) != expected_hash:
                 raise ValueError("Input/code changed: " + p)
@@ -447,7 +496,6 @@ def main():
         if weekly_comparison is not None:
             summary["weekly_xgboost_comparison"] = weekly_comparison
         if args.compare_weekly_xgboost_additions:
-            registry = json.loads(registry_path.read_text())
             write("replay_summary.json", {"window": manifest["strategy_iteration"], "independent": False,
                                           "augmentation_weight": weight,
                                           "augmentation_method": method,
@@ -466,7 +514,6 @@ def main():
                                            "screening": manifest["screening"],
                                            "research_pool_sha256": file_fingerprint(out / "research_pool.json")["sha256"]})
         write("summary.json", summary)
-        write("status.json", {"status": "completed_research"})
         lines = ["# Medium-frequency factor and strategy research", "",
                  f"Research eligibility: {pool['eligible_counts']}. Reserved 2024–2025 not evaluated.", "",
                  "Labels: next-open entry to open after 1/5/20 holding sessions; research uses fixed nonoverlapping anchors.",
@@ -480,10 +527,19 @@ def main():
         lines += ["", "Budget limits include initial formation and terminal wind-down; locked or untradable inventory is never erased.",
                   "Costs, signal definitions, screening rules and source hashes were frozen before strategy iteration.", "", *["- " + line for line in manifest["limitations"]]]
         (out / "report.md").write_text("\n".join(lines) + "\n")
-        print(json.dumps(clean(summary), ensure_ascii=False, indent=2), flush=True)
-    except BaseException as exc:
-        write("status.json", {"status": "failed", "error": str(exc)})
+        write("artifacts.json", artifact_inventory(out))
+        set_status("completed_research")
+    except (Exception, KeyboardInterrupt) as exc:
+        try:
+            write("artifacts.json", artifact_inventory(out))
+        except OSError:
+            pass
+        try:
+            set_status("failed", stage=stage, error=str(exc))
+        except OSError:
+            pass
         raise
+    return clean(summary)
 
 
 if __name__ == "__main__":
