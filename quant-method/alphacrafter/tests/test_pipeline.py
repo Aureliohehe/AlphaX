@@ -230,11 +230,11 @@ class PipelineIntegrationTests(unittest.TestCase):
             stopped = self.run_with_hook("""
 import os
 from run_pipeline import Pipeline, main
-original = Pipeline.freeze_selection
-def stop_after_freeze(self, predictions):
-    original(self, predictions)
+original = Pipeline.evaluate_holdout
+def stop_after_cash_evaluation(self, selection, predictions):
+    original(self, selection, predictions)
     os._exit(76)
-Pipeline.freeze_selection = stop_after_freeze
+Pipeline.evaluate_holdout = stop_after_cash_evaluation
 main()
 """, args)
             self.assertEqual(stopped.returncode, 76, stopped.stderr)
@@ -242,9 +242,9 @@ main()
             frozen = frozen_path.read_bytes()
             resumed = self.run_with_hook("""
 from run_pipeline import Pipeline, main
-def fail_if_refrozen(*args):
-    raise AssertionError("A committed cash decision must not be reconsidered")
-Pipeline.freeze_selection = fail_if_refrozen
+def fail_if_recomputed(*args):
+    raise AssertionError("A committed cash decision and evaluation must be reused")
+Pipeline.freeze_selection = Pipeline.evaluate_holdout = fail_if_recomputed
 main()
 """, [*args, "--resume"])
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
@@ -460,7 +460,7 @@ main()
                              "trader/holdout_returns.csv", "summary.json"):
                 self.assertEqual((out / relative).read_bytes(), (continuous / relative).read_bytes())
 
-    def test_resume_is_rejected_at_holdout_boundary(self):
+    def test_resume_verifies_frozen_decision_at_holdout_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             panel = self.prepare(root, periods=60)
@@ -481,9 +481,171 @@ run_pipeline.main()
             self.assertTrue((out / "checkpoints/holdout_started.json").is_file())
             self.assertTrue((out / "trader/checkpoint.json").is_file())
             self.assertFalse((out / "screener_holdout").exists())
+            marker = out / "checkpoints/holdout_started.json"
+            original = marker.read_bytes()
+            marker.write_text(json.dumps({**json.loads(original), "trader_checkpoint_sha256": "wrong"}))
             resumed = run_cli("run_pipeline.py", *args, "--resume", check=False)
-            self.assertIn("before the holdout starts", resumed.stderr)
+            self.assertIn("Holdout start marker disagrees", resumed.stderr)
+            marker.write_bytes(original)
+            selection = out / "trader/selection.json"
+            frozen = selection.read_bytes()
+            selection.write_bytes(frozen + b"\n")
+            resumed = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("Committed trader_selection output or inputs changed", resumed.stderr)
+            selection.write_bytes(frozen)
             self.assertFalse((out / "attempts").exists())
+            run_cli("run_pipeline.py", *args, "--resume")
+            self.assertEqual(selection.read_bytes(), frozen)
+            self.assertEqual(json.loads((out / "status.json").read_text())["status"], "completed")
+            completed = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("completed runs cannot be reopened", completed.stderr)
+
+    def test_holdout_resumes_miner_screener_and_evaluation_without_recomputing_commits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = self.prepare(root)
+            args = self.arguments(root, panel)
+            out = root / "out"
+            stopped = self.run_with_hook("""
+import os
+import run_pipeline
+original = run_pipeline.publish_json
+def stop_before_round(path, payload):
+    if payload.get("round", {}).get("phase") == "holdout":
+        os._exit(81)
+    return original(path, payload)
+run_pipeline.publish_json = stop_before_round
+run_pipeline.main()
+""", args)
+            self.assertEqual(stopped.returncode, 81, stopped.stderr)
+            plan = json.loads((out / "plan.json").read_text())
+            first_holdout = next(row["as_of"] for row in plan["rounds"] if row["phase"] == "holdout")
+            snapshot = out / f"snapshots/{first_holdout}.json"
+            frozen = (out / "trader/selection.json").read_bytes()
+            self.assertTrue(snapshot.exists())
+            self.assertFalse((out / f"checkpoints/{first_holdout}.json").exists())
+
+            stopped = self.run_with_hook("""
+import os
+import run_pipeline
+original = run_pipeline.publish_json
+def stop_after_round(path, payload):
+    original(path, payload)
+    if payload.get("round", {}).get("phase") == "holdout":
+        os._exit(82)
+run_pipeline.publish_json = stop_after_round
+run_pipeline.main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 82, stopped.stderr)
+            checkpoint = out / f"checkpoints/{first_holdout}.json"
+            first_checkpoint = checkpoint.read_bytes()
+            self.assertEqual(len(list((out / "attempts").glob(f"*/snapshots/{first_holdout}.json"))), 1)
+            original_snapshot = snapshot.read_bytes()
+            snapshot.write_bytes(original_snapshot + b"\n")
+            rejected = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("Committed Miner snapshot or registry changed", rejected.stderr)
+            snapshot.write_bytes(original_snapshot)
+
+            stopped = self.run_with_hook("""
+import os
+from pathlib import Path
+from run_pipeline import Pipeline, main
+original = Pipeline.step
+def stop_during_screen(self, name, script, arguments):
+    if name == "screener_holdout":
+        output = Path(arguments[arguments.index("--output-dir") + 1])
+        (output / "predictions.csv").write_text("incomplete holdout")
+        os._exit(83)
+    return original(self, name, script, arguments)
+Pipeline.step = stop_during_screen
+main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 83, stopped.stderr)
+            self.assertFalse((out / "screener_holdout").exists())
+
+            stopped = self.run_with_hook("""
+import os
+from pathlib import Path
+import pandas as pd
+from run_pipeline import main
+original = pd.DataFrame.to_csv
+def stop_during_evaluation(self, path, *args, **kwargs):
+    if isinstance(path, Path) and path.name == "holdout_positions.csv":
+        os._exit(84)
+    return original(self, path, *args, **kwargs)
+pd.DataFrame.to_csv = stop_during_evaluation
+main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 84, stopped.stderr)
+            archived, = (out / "attempts").glob("*/.staging/screener_holdout/predictions.csv")
+            self.assertEqual(archived.read_text(), "incomplete holdout")
+            self.assertTrue((out / "screener_holdout/checkpoint.json").is_file())
+            self.assertTrue((out / ".staging/trader_holdout/holdout_returns.csv").exists())
+            self.assertFalse((out / "holdout_evaluation").exists())
+            predictions = out / "screener_holdout/predictions.csv"
+            original_predictions = predictions.read_bytes()
+            predictions.write_bytes(original_predictions + b"\n")
+            rejected = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("Committed screener_holdout output or inputs changed", rejected.stderr)
+            predictions.write_bytes(original_predictions)
+
+            stopped = self.run_with_hook("""
+import os
+from pathlib import Path
+from run_pipeline import main
+original = os.link
+def stop_during_export(source, destination, *args, **kwargs):
+    original(source, destination, *args, **kwargs)
+    if Path(destination).name == "holdout_returns.csv":
+        os._exit(85)
+os.link = stop_during_export
+main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 85, stopped.stderr)
+            evaluation = out / "holdout_evaluation"
+            result_checkpoint = (evaluation / "checkpoint.json").read_bytes()
+            self.assertTrue((out / "trader/holdout_returns.csv").is_file())
+            self.assertFalse((out / "summary.json").exists())
+            self.assertEqual(len(list((out / "attempts").glob("*/.staging/trader_holdout/holdout_returns.csv"))), 1)
+            returns = out / "trader/holdout_returns.csv"
+            original_returns = returns.read_bytes()
+            returns.write_bytes(original_returns + b"\n")
+            rejected = run_cli("run_pipeline.py", *args, "--resume", check=False)
+            self.assertIn("Committed trader_holdout output or inputs changed", rejected.stderr)
+            returns.write_bytes(original_returns)
+
+            stopped = self.run_with_hook("""
+import os
+import run_pipeline
+original = run_pipeline.publish_json
+def fail_if_recomputed(*args):
+    raise AssertionError("Committed stages must be reused during finalization")
+def stop_before_status(path, payload):
+    if path.name == "status.json" and payload["status"] == "completed":
+        os._exit(86)
+    return original(path, payload)
+pipeline = run_pipeline.Pipeline
+pipeline.mine = pipeline.screen = pipeline.freeze_selection = pipeline.evaluate_holdout = fail_if_recomputed
+run_pipeline.publish_json = stop_before_status
+run_pipeline.main()
+""", [*args, "--resume"])
+            self.assertEqual(stopped.returncode, 86, stopped.stderr)
+            self.assertFalse((out / "status.json").exists())
+            self.assertTrue((out / "summary.json").exists())
+            self.assertTrue((out / "artifacts.json").exists())
+            run_cli("run_pipeline.py", *args, "--resume")
+            self.assertEqual((evaluation / "checkpoint.json").read_bytes(), result_checkpoint)
+            self.assertEqual(checkpoint.read_bytes(), first_checkpoint)
+            self.assertEqual((out / "trader/selection.json").read_bytes(), frozen)
+            self.assertEqual(json.loads((out / "status.json").read_text())["status"], "completed")
+            events = [json.loads(line) for line in (out / "events.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(item["event"] == "trader_frozen" for item in events), 1)
+            self.assertEqual(sum(item["event"] == "completed" for item in events), 1)
+            self.assertTrue([item for item in events if item["event"] == "resumed"][-1]["holdout_evaluation_restored"])
+            run_cli("run_pipeline.py", *self.arguments(root, panel, output="continuous"))
+            for relative in ("screener_holdout/predictions.csv", "trader/holdout_positions.csv",
+                             "trader/holdout_returns.csv", "rounds.csv", "summary.json"):
+                self.assertEqual((out / relative).read_bytes(), (root / "continuous" / relative).read_bytes())
 
     def test_run_directory_allows_only_one_writer(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -94,7 +94,7 @@ LLM 是候选生成和部分筛选判断的可选组件；默认流程无需调�
 - 快照按日期激活，不把最终因子库回填成历史可交易信号。
 - `diagnostic_predictions.csv` 是历史回算诊断，不能替代快照回放。
 - Pipeline 使用输入、代码及关键产物哈希，保存事件日志与冻结选择。
-- 实验使用新输出目录，已提交快照保持只读。留出期启动前，显式续跑可以复用已验证的 Miner 轮次、Screener 信号和 Trader 冻结决定。
+- 实验使用新输出目录，已提交快照保持只读。显式续跑可复用两期 Miner 轮次、Screener 信号、Trader 冻结决定及已提交的留出评估。
 - 读取结果应确认 `status.json` 为 `completed`，不能仅凭部分文件判断成功。
 
 详细时序与产物结构见 [PIPELINE.md](alphacrafter/PIPELINE.md) 和 [TEMPORAL_REPLAY.md](alphacrafter/TEMPORAL_REPLAY.md)。

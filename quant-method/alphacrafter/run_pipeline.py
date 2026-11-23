@@ -3,12 +3,13 @@
 
 Commit the schedule and policy first. Build selection-period snapshots, freeze
 Trader parameters, THEN generate holdout-period snapshots and evaluate once.
-Resume is available through strategy selection, before holdout starts.
+Committed stages can be resumed through the end of holdout.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -33,9 +34,18 @@ from trader_lite import (
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIGS = "0.8,0.5,50,25;0.8,0.0,50,50;0.8,1.0,50,0"
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 SCREENER_SELECTION = "screener_selection"
 TRADER_SELECTION = "trader_selection"
+SCREENER_HOLDOUT = "screener_holdout"
+TRADER_HOLDOUT = "trader_holdout"
+HOLDOUT_EVALUATION = "holdout_evaluation"
+HOLDOUT_EXPORTS = {
+    "holdout_returns.csv": "trader/holdout_returns.csv",
+    "holdout_positions.csv": "trader/holdout_positions.csv",
+    "rounds.csv": "rounds.csv",
+    "summary.json": "summary.json",
+}
 
 
 def iso(value: object) -> str:
@@ -144,6 +154,7 @@ class Pipeline:
         self.plan = plan
         self.root = args.output_dir.resolve()
         self.checkpoints = self.root / "checkpoints"
+        self.holdout_boundary = self.checkpoints / "holdout_started.json"
         self.log_dir = self.root / "logs"
         self.lock_fd = None
         self.round_results: List[Dict[str, object]] = []
@@ -175,9 +186,9 @@ class Pipeline:
         self.stage = f"miner_{cutoff}"
         destination = self.root / "miner" / cutoff
         snapshot_dir = self.root / "snapshots"
-        staging = self.root / ".staging" / cutoff if round_plan["phase"] == "selection" else None
-        output = staging / "miner" if staging else destination
-        snapshots = staging / "snapshots" if staging else snapshot_dir
+        staging = self.root / ".staging" / cutoff
+        output = staging / "miner"
+        snapshots = staging / "snapshots"
         output.mkdir(parents=True)
         # Miner --registry is read/write. Copy the predecessor into the NEW
         # round, never point it at an archived predecessor's registry itself.
@@ -205,29 +216,27 @@ class Pipeline:
         snapshot = snapshots / f"{cutoff}.json"
         registry = output / "registry.json"
         row = self.round_record(round_plan, snapshot, registry)
-        if staging:
-            published_snapshot = snapshot_dir / snapshot.name
-            # Preserve the Miner registry's existing public snapshot path.
-            payload = json.loads(registry.read_text())
-            payload["snapshot_file"] = str(published_snapshot)
-            registry.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=True) + "\n")
-            for target in (destination, published_snapshot):
-                if target.exists() or target.is_symlink():
-                    raise ValueError(f"Cannot publish over existing Miner output: {target}")
-                target.parent.mkdir(parents=True, exist_ok=True)
-            output.rename(destination)
-            snapshot.rename(published_snapshot)
-            snapshot, registry = published_snapshot, destination / "registry.json"
-            checkpoint = self.checkpoints / f"{cutoff}.json"
-            publish_json(checkpoint, {"version": CHECKPOINT_VERSION, "round": row,
-                                      "files": self.relative_fingerprints([snapshot, registry])})
-            self.completed_artifacts.update(fingerprint_set([checkpoint]))
+        published_snapshot = snapshot_dir / snapshot.name
+        # Preserve the Miner registry's existing public snapshot path.
+        payload = json.loads(registry.read_text())
+        payload["snapshot_file"] = str(published_snapshot)
+        registry.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=True) + "\n")
+        for target in (destination, published_snapshot):
+            if target.exists() or target.is_symlink():
+                raise ValueError(f"Cannot publish over existing Miner output: {target}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+        output.rename(destination)
+        snapshot.rename(published_snapshot)
+        snapshot, registry = published_snapshot, destination / "registry.json"
+        checkpoint = self.checkpoints / f"{cutoff}.json"
+        publish_json(checkpoint, {"version": CHECKPOINT_VERSION, "round": row,
+                                  "files": self.relative_fingerprints([snapshot, registry])})
+        self.completed_artifacts.update(fingerprint_set([checkpoint]))
         self.register_round(row, snapshot, registry)
-        if staging:
-            # The snapshot subdirectory and staging directory are empty after
-            # publication. A crash here leaves only harmless empty directories.
-            snapshots.rmdir()
-            staging.rmdir()
+        # The snapshot subdirectory and staging directory are empty after
+        # publication. A crash here leaves only harmless empty directories.
+        snapshots.rmdir()
+        staging.rmdir()
         self.event({"event": "snapshot_completed", **row})
 
     def round_record(self, round_plan: dict, snapshot: Path, registry: Path) -> dict:
@@ -271,14 +280,10 @@ class Pipeline:
             key: value for key, value in file_fingerprint(path).items() if key != "path"
         } for path in paths}
 
-    def restore_selection(self, manifest: dict, selection_rounds: list[dict]) -> tuple[Path | None, Path | None]:
-        boundary = ("checkpoints/holdout_started.json", "screener_holdout", "summary.json", "rounds.csv",
-                    "trader/holdout_returns.csv", "trader/holdout_positions.csv")
-        if any((self.root / item).exists() for item in boundary):
-            raise ValueError("Resume is limited to runs before the holdout starts")
+    def restore(self, manifest: dict, selection_rounds: list[dict]) -> tuple[Path | None, Path | None, Path | None, dict | None]:
         status = self.root / "status.json"
         if status.exists() and json.loads(status.read_text()).get("status") != "failed":
-            raise ValueError("Resume requires an interrupted or failed run")
+            raise ValueError("Resume requires an interrupted or failed run; completed runs cannot be reopened")
         initial = self.checkpoints / "run.json"
         if not initial.is_file():
             raise ValueError("No initialized Miner checkpoints in this run")
@@ -296,53 +301,61 @@ class Pipeline:
         self.completed_artifacts.update(fingerprint_set([manifest_path, plan_path, initial]))
 
         selection_marker = self.checkpoints / "selection_closed.json"
-        selection_started = selection_marker.exists()
-        checkpoint_names = {path.name for path in self.checkpoints.glob("*.json")} - {"run.json", selection_marker.name}
-        committed = selection_rounds[:len(checkpoint_names)]
+        holdout_marker = self.holdout_boundary
+        holdout_started = holdout_marker.exists()
+        planned = self.plan["rounds"] if holdout_started else selection_rounds
+        checkpoint_names = {path.name for path in self.checkpoints.glob("*.json")} - {
+            initial.name, selection_marker.name, holdout_marker.name,
+        }
+        committed = planned[:len(checkpoint_names)]
         if checkpoint_names != {f"{row['as_of']}.json" for row in committed}:
-            raise ValueError("Miner checkpoints must be a contiguous prefix of the selection plan")
-        for round_plan in committed:
-            cutoff = round_plan["as_of"]
-            checkpoint = self.checkpoints / f"{cutoff}.json"
-            snapshot = self.root / "snapshots" / checkpoint.name
-            registry = self.root / "miner" / cutoff / "registry.json"
-            record = json.loads(checkpoint.read_text())
-            if record.get("version") != CHECKPOINT_VERSION or record.get("files") != self.relative_fingerprints([snapshot, registry]):
-                raise ValueError(f"Committed Miner snapshot or registry changed for {cutoff}")
-            row = self.round_record(round_plan, snapshot, registry)
-            if row != record.get("round"):
-                raise ValueError(f"Miner checkpoint disagrees with the committed round {cutoff}")
-            self.completed_artifacts.update(fingerprint_set([checkpoint]))
-            self.register_round(row, snapshot, registry)
+            raise ValueError("Miner checkpoints must be a contiguous prefix of the committed plan")
+
+        self.restore_miner_rounds(committed[:len(selection_rounds)])
+        predictions = selection = holdout_predictions = summary = None
+        if selection_marker.exists():
+            if (len(self.round_results) != len(selection_rounds)
+                    or json.loads(selection_marker.read_text()) != self.selection_started_record()):
+                raise ValueError("Selection Screener marker disagrees with the committed Miner rounds")
+            self.completed_artifacts.update(fingerprint_set([selection_marker]))
+            predictions, selection = self.restore_selection_outputs()
+        elif any((self.root / name).exists() for name in (SCREENER_SELECTION, "trader")):
+            raise ValueError("Selection output exists without the selection start marker")
+        if holdout_started:
+            if selection is None or json.loads(holdout_marker.read_text()) != self.holdout_started_record(selection):
+                raise ValueError("Holdout start marker disagrees with the frozen Trader checkpoint")
+            self.completed_artifacts.update(fingerprint_set([holdout_marker]))
+            self.restore_miner_rounds(committed[len(selection_rounds):])
+            if len(committed) == len(planned):
+                holdout_predictions, summary = self.restore_holdout_outputs(selection)
+            else:
+                self.reject_unexpected_holdout_outputs()
+        else:
+            self.reject_unexpected_holdout_outputs()
 
         completed_dates = {row["as_of"] for row in self.round_results}
         allowed_dates = completed_dates.copy()
         partial = []
-        if len(committed) < len(selection_rounds):
-            cutoff = selection_rounds[len(committed)]["as_of"]
+        if len(committed) < len(planned):
+            cutoff = planned[len(committed)]["as_of"]
             stage = self.root / ".staging" / cutoff
             if stage.is_dir() and not stage.is_symlink():
                 allowed_dates.add(cutoff)
                 partial = [self.root / "miner" / cutoff, self.root / "snapshots" / f"{cutoff}.json", stage]
         self.check_resume_archive(completed_dates, allowed_dates)
         allowed_stages = allowed_dates.copy()
-        predictions = selection = None
-        if selection_started:
-            if (len(committed) != len(selection_rounds)
-                    or json.loads(selection_marker.read_text()) != self.selection_started_record()):
-                raise ValueError("Selection Screener marker disagrees with the committed Miner rounds")
-            self.completed_artifacts.update(fingerprint_set([selection_marker]))
-            predictions, selection = self.restore_selection_outputs()
-            if selection is None:
-                pending = TRADER_SELECTION if predictions else SCREENER_SELECTION
-                allowed_stages.add(pending)
-                partial.append(self.root / ".staging" / pending)
-        elif any((self.root / name).exists() for name in (SCREENER_SELECTION, "trader")):
-            raise ValueError("Selection output exists without the selection start marker")
-
+        if holdout_started and len(committed) == len(planned) and summary is None:
+            pending = TRADER_HOLDOUT if holdout_predictions is not None else SCREENER_HOLDOUT
+        elif selection_marker.exists() and selection is None:
+            pending = TRADER_SELECTION if predictions is not None else SCREENER_SELECTION
+        else:
+            pending = None
+        if pending:
+            allowed_stages.add(pending)
+            partial.append(self.root / ".staging" / pending)
         staged = self.root / ".staging"
         if staged.exists() and not {path.name for path in staged.iterdir()} <= allowed_stages:
-            raise ValueError("Unexpected staged rounds or selection outputs for resume")
+            raise ValueError("Unexpected staged rounds or phase outputs for resume")
 
         attempts = self.root / "attempts"
         attempts.mkdir(exist_ok=True)
@@ -358,8 +371,25 @@ class Pipeline:
         self.event({"event": "resumed", "run_id": original["run_id"],
                     "completed_rounds": [row["as_of"] for row in self.round_results],
                     "screener_restored": predictions is not None, "trader_frozen_restored": selection is not None,
+                    "holdout_screener_restored": holdout_predictions is not None,
+                    "holdout_evaluation_restored": summary is not None,
                     "previous_attempt": str(archive.relative_to(self.root))})
-        return predictions, selection
+        return predictions, selection, holdout_predictions, summary
+
+    def restore_miner_rounds(self, rounds: list[dict]) -> None:
+        for round_plan in rounds:
+            cutoff = round_plan["as_of"]
+            checkpoint = self.checkpoints / f"{cutoff}.json"
+            snapshot = self.root / "snapshots" / checkpoint.name
+            registry = self.root / "miner" / cutoff / "registry.json"
+            record = json.loads(checkpoint.read_text())
+            if record.get("version") != CHECKPOINT_VERSION or record.get("files") != self.relative_fingerprints([snapshot, registry]):
+                raise ValueError(f"Committed Miner snapshot or registry changed for {cutoff}")
+            row = self.round_record(round_plan, snapshot, registry)
+            if row != record.get("round"):
+                raise ValueError(f"Miner checkpoint disagrees with the committed round {cutoff}")
+            self.completed_artifacts.update(fingerprint_set([checkpoint]))
+            self.register_round(row, snapshot, registry)
 
     def snapshot_hashes(self) -> dict:
         return {row["as_of"]: row["snapshot_sha256"] for row in self.round_results}
@@ -367,10 +397,14 @@ class Pipeline:
     def selection_started_record(self) -> dict:
         return {"version": CHECKPOINT_VERSION, "stage": SCREENER_SELECTION, "snapshot_hashes": self.snapshot_hashes()}
 
-    def selection_stage_record(self, stage: str, output: Path, inputs: dict) -> dict:
+    def holdout_started_record(self, selection: Path) -> dict:
+        return {"version": CHECKPOINT_VERSION, "stage": "holdout",
+                "trader_checkpoint_sha256": file_fingerprint(selection.with_name("checkpoint.json"))["sha256"]}
+
+    def stage_record(self, stage: str, output: Path, inputs: dict, *, ignore: tuple[str, ...] = ()) -> dict:
         files = {}
         for path in sorted(output.iterdir()):
-            if path.name == "checkpoint.json":
+            if path.name == "checkpoint.json" or path.name in ignore:
                 continue
             if not path.is_file() or path.is_symlink():
                 raise ValueError(f"Unexpected file in {stage} output: {path.name}")
@@ -378,28 +412,28 @@ class Pipeline:
             files[path.name] = {"sha256": fingerprint["sha256"], "bytes": fingerprint["bytes"]}
         return {"version": CHECKPOINT_VERSION, "stage": stage, "inputs": inputs, "files": files}
 
-    def publish_selection_stage(self, stage: str, output: Path, destination: Path, inputs: dict) -> None:
+    def publish_stage(self, stage: str, output: Path, destination: Path, inputs: dict) -> None:
         if destination.exists() or destination.is_symlink():
-            raise ValueError(f"Cannot publish over an existing selection stage: {destination}")
-        record = self.selection_stage_record(stage, output, inputs)
+            raise ValueError(f"Cannot publish over an existing stage: {destination}")
+        record = self.stage_record(stage, output, inputs)
         publish_json(output / "checkpoint.json", record)
         # The directory rename publishes the stage files and checkpoint together.
         output.rename(destination)
-        self.pin_selection_stage(destination, record)
+        self.pin_stage(destination, record)
 
-    def pin_selection_stage(self, directory: Path, record: dict) -> None:
+    def pin_stage(self, directory: Path, record: dict) -> None:
         self.completed_artifacts.update(fingerprint_set([
             directory / name for name in (*record["files"], "checkpoint.json")
         ]))
 
-    def verify_selection_stage(self, stage: str, directory: Path, inputs: dict) -> None:
+    def verify_stage(self, stage: str, directory: Path, inputs: dict, *, ignore: tuple[str, ...] = ()) -> None:
         checkpoint = directory / "checkpoint.json"
         if directory.is_symlink() or checkpoint.is_symlink() or not checkpoint.is_file():
             raise ValueError(f"Missing committed {stage} checkpoint")
-        record = self.selection_stage_record(stage, directory, inputs)
+        record = self.stage_record(stage, directory, inputs, ignore=ignore)
         if json.loads(checkpoint.read_text()) != record:
             raise ValueError(f"Committed {stage} output or inputs changed")
-        self.pin_selection_stage(directory, record)
+        self.pin_stage(directory, record)
 
     def trader_inputs(self, predictions: Path) -> dict:
         return {
@@ -415,13 +449,13 @@ class Pipeline:
             if trader.exists():
                 raise ValueError("Trader output requires the committed selection Screener")
             return None, None
-        self.verify_selection_stage(SCREENER_SELECTION, screener, {"snapshot_hashes": self.snapshot_hashes()})
+        self.verify_stage(SCREENER_SELECTION, screener, {"snapshot_hashes": self.snapshot_hashes()})
         self.validate_screen_registry(screener, "selection")
         predictions = screener / "predictions.csv"
         if not trader.exists():
             return predictions, None
         inputs = self.trader_inputs(predictions)
-        self.verify_selection_stage(TRADER_SELECTION, trader, inputs)
+        self.verify_stage(TRADER_SELECTION, trader, inputs, ignore=("holdout_returns.csv", "holdout_positions.csv"))
         selection = trader / "selection.json"
         frozen = json.loads(selection.read_text())
         expected = {
@@ -433,6 +467,40 @@ class Pipeline:
         ):
             raise ValueError("Frozen Trader decision disagrees with the selection inputs")
         return predictions, selection
+
+    def reject_unexpected_holdout_outputs(self) -> None:
+        for name in (SCREENER_HOLDOUT, HOLDOUT_EVALUATION, *HOLDOUT_EXPORTS.values()):
+            path = self.root / name
+            if path.exists() or path.is_symlink():
+                raise ValueError(f"Unexpected {name} before its holdout prerequisites were committed")
+
+    def restore_holdout_outputs(self, selection: Path) -> tuple[Path | None, dict | None]:
+        screener = self.root / SCREENER_HOLDOUT
+        evaluation = self.root / HOLDOUT_EVALUATION
+        if not screener.exists() and not screener.is_symlink():
+            self.reject_unexpected_holdout_outputs()
+            return None, None
+        self.verify_stage(SCREENER_HOLDOUT, screener, self.screener_inputs("holdout"))
+        self.validate_screen_registry(screener, "holdout")
+        predictions = screener / "predictions.csv"
+        if not evaluation.exists() and not evaluation.is_symlink():
+            if any((self.root / name).exists() or (self.root / name).is_symlink()
+                   for name in HOLDOUT_EXPORTS.values()):
+                raise ValueError("Published holdout results require a committed evaluation")
+            return predictions, None
+        inputs = self.holdout_evaluation_inputs(selection, predictions)
+        self.verify_stage(TRADER_HOLDOUT, evaluation, inputs)
+        frozen = json.loads(selection.read_text())
+        summary = json.loads((evaluation / "summary.json").read_text())
+        expected = {
+            "status": frozen["status"], "selected_config": frozen["selected_config"],
+            "selection_sha256": inputs["selection_sha256"],
+            "holdout_prediction_sha256": inputs["prediction_sha256"], "rounds": self.round_results,
+        }
+        if any(summary.get(key) != value for key, value in expected.items()):
+            raise ValueError("Committed holdout summary disagrees with the frozen decision or inputs")
+        self.verify_holdout_exports()
+        return predictions, summary
 
     def check_resume_archive(self, completed: set[str], allowed: set[str]) -> None:
         for folder, suffix in (("miner", ""), ("snapshots", ".json")):
@@ -456,9 +524,8 @@ class Pipeline:
         self.verify_archive(phase)
         window = self.plan[phase]
         destination = self.root / self.stage
-        output = self.root / ".staging" / self.stage if phase == "selection" else destination
-        if phase == "selection":
-            output.mkdir(parents=True)
+        output = self.root / ".staging" / self.stage
+        output.mkdir(parents=True)
         arguments = [
             "--input", self.args.input, "--library-history", self.root / "snapshots",
             "--signal-start", window["start"], "--as-of", window["end"],
@@ -471,14 +538,17 @@ class Pipeline:
         self.step(self.stage, "screener_lite.py", arguments)
         self.validate_screen_registry(output, phase)
         predictions = output / "predictions.csv"
-        if phase == "selection":
-            self.verify_archive(phase)
-            if not predictions.is_file():
-                raise ValueError("Selection Screener did not write predictions.csv")
-            self.publish_selection_stage(SCREENER_SELECTION, output, destination, {"snapshot_hashes": self.snapshot_hashes()})
-        else:
-            self.completed_artifacts.update(fingerprint_set([output / "registry.json", predictions]))
+        self.verify_archive(phase)
+        if not predictions.is_file():
+            raise ValueError(f"{self.stage} did not write predictions.csv")
+        self.publish_stage(self.stage, output, destination, self.screener_inputs(phase))
         return destination / predictions.name
+
+    def screener_inputs(self, phase: str) -> dict:
+        inputs = {"snapshot_hashes": self.snapshot_hashes()}
+        if phase == "holdout":
+            inputs["holdout_started_sha256"] = file_fingerprint(self.holdout_boundary)["sha256"]
+        return inputs
 
     def validate_screen_registry(self, output: Path, phase: str) -> None:
         window = self.plan[phase]
@@ -522,14 +592,23 @@ class Pipeline:
         }
         write_json_new(output / "selection.json", frozen)
         verify_fingerprints(self.completed_artifacts)
-        self.publish_selection_stage(TRADER_SELECTION, output, destination, inputs)
+        self.publish_stage(TRADER_SELECTION, output, destination, inputs)
         path = destination / "selection.json"
         self.event({"event": "trader_frozen", "status": frozen["status"], "sha256": file_fingerprint(path)["sha256"]})
         return path
 
+    def holdout_evaluation_inputs(self, selection: Path, predictions: Path) -> dict:
+        return {
+            "selection_sha256": file_fingerprint(selection)["sha256"],
+            "prediction_sha256": file_fingerprint(predictions)["sha256"],
+            "screener_checkpoint_sha256": file_fingerprint(predictions.with_name("checkpoint.json"))["sha256"],
+            "holdout_started_sha256": file_fingerprint(self.holdout_boundary)["sha256"],
+        }
+
     def evaluate_holdout(self, selection: Path, predictions: Path) -> Dict[str, object]:
-        self.stage = "trader_holdout"
+        self.stage = TRADER_HOLDOUT
         verify_fingerprints(self.completed_artifacts)
+        inputs = self.holdout_evaluation_inputs(selection, predictions)
         # Read the committed choice; never call select_configuration on holdout.
         frozen = json.loads(selection.read_text())
         config = TraderConfig(**frozen["selected_config"]) if frozen["selected_config"] else None
@@ -537,14 +616,16 @@ class Pipeline:
         frame = load_inputs(predictions, self.args.input, as_of=window["end"], calendar_path=self.args.calendar,
                             require_explicit_label_dates=self.args.require_explicit_label_dates)
         report, positions = simulate(frame, config, window["start"], window["end"], frozen["cost_rate"])
-        report.to_csv(self.root / "trader" / "holdout_returns.csv")
-        positions.to_csv(self.root / "trader" / "holdout_positions.csv", index=False)
+        output = self.root / ".staging" / TRADER_HOLDOUT
+        output.mkdir(parents=True)
+        report.to_csv(output / "holdout_returns.csv")
+        positions.to_csv(output / "holdout_positions.csv", index=False)
         metrics = summarize(report, frozen["initial_cash"], frozen["annual_risk_free_rate"])
-        return {
+        summary = {
             "runner_version": self.plan["runner_version"],
             "status": frozen["status"], "selected_config": frozen["selected_config"],
-            "selection_sha256": file_fingerprint(selection)["sha256"],
-            "holdout_prediction_sha256": file_fingerprint(predictions)["sha256"],
+            "selection_sha256": inputs["selection_sha256"],
+            "holdout_prediction_sha256": inputs["prediction_sha256"],
             "maintenance_rounds": len(self.round_results),
             "label_end_source": label_end_source(frame, 1),
             "calendar_audit": self.plan["calendar_audit"],
@@ -559,6 +640,39 @@ class Pipeline:
                 "Holdout factors adapt using already-revealed data under a precommitted policy; Trader parameters stay frozen",
             ],
         }
+        pd.DataFrame(self.round_results).to_csv(output / "rounds.csv", index=False)
+        write_json_new(output / "summary.json", summary)
+        verify_fingerprints(self.completed_artifacts)
+        self.publish_stage(TRADER_HOLDOUT, output, self.root / HOLDOUT_EVALUATION, inputs)
+        return summary
+
+    def verify_holdout_exports(self) -> None:
+        for name, relative in HOLDOUT_EXPORTS.items():
+            source = self.root / HOLDOUT_EVALUATION / name
+            target = self.root / relative
+            if target.is_symlink() or (target.exists() and not target.is_file()):
+                raise ValueError(f"Invalid published holdout result: {relative}")
+            if target.exists() and not target.samefile(source):
+                expected = self.completed_artifacts[str(source.resolve())]
+                actual = file_fingerprint(target)
+                if actual["sha256"] != expected["sha256"] or actual["bytes"] != expected["bytes"]:
+                    raise ValueError(f"Published holdout result changed: {relative}")
+
+    def finalize(self, pinned: dict) -> None:
+        self.stage = "finalizing"
+        verify_fingerprints(pinned)
+        verify_fingerprints(self.completed_artifacts)
+        self.verify_holdout_exports()
+        for name, relative in HOLDOUT_EXPORTS.items():
+            target = self.root / relative
+            if not target.exists():
+                os.link(self.root / HOLDOUT_EVALUATION / name, target)
+        publish_json(self.root / "artifacts.json", artifact_inventory(self.root))
+        events = self.root / "events.jsonl"
+        if json.dumps({"event": "completed"}) not in events.read_text().splitlines():
+            self.event({"event": "completed"})
+        # Consumers may read a completed run only after the results and index exist.
+        publish_json(self.root / "status.json", {"status": "completed"})
 
     def run(self, pinned_inputs: dict | None = None) -> Dict[str, object]:
         resume = getattr(self.args, "resume", False)
@@ -596,10 +710,10 @@ class Pipeline:
             pinned, self.plan, checkout,
         )
         selection_rounds = [row for row in self.plan["rounds"] if row["phase"] == "selection"]
-        selection_predictions = selection = None
+        selection_predictions = selection = holdout_predictions = summary = None
         if resume:
             verify_fingerprints(pinned)
-            selection_predictions, selection = self.restore_selection(manifest, selection_rounds)
+            selection_predictions, selection, holdout_predictions, summary = self.restore(manifest, selection_rounds)
         else:
             manifest_path, plan_path = self.root / "manifest.json", self.root / "plan.json"
             publish_json(manifest_path, manifest)
@@ -609,39 +723,31 @@ class Pipeline:
                                    "files": self.relative_fingerprints([manifest_path, plan_path])})
             self.completed_artifacts.update(fingerprint_set([manifest_path, plan_path, initial]))
         try:
-            for round_plan in selection_rounds[len(self.round_results):]:
-                self.mine(round_plan)
-            self.verify_archive("selection")
-            verify_fingerprints(pinned)
-            boundary = self.checkpoints / "selection_closed.json"
-            if not boundary.exists():
-                publish_json(boundary, self.selection_started_record())
-                self.completed_artifacts.update(fingerprint_set([boundary]))
-            if selection_predictions is None:
-                selection_predictions = self.screen("selection")
-            if selection is None:
-                selection = self.freeze_selection(selection_predictions)
-            verify_fingerprints(pinned)
-            verify_fingerprints(self.completed_artifacts)
-            holdout_boundary = self.checkpoints / "holdout_started.json"
-            publish_json(holdout_boundary, {"version": CHECKPOINT_VERSION, "stage": "holdout",
-                                           "trader_checkpoint_sha256": file_fingerprint(selection.with_name("checkpoint.json"))["sha256"]})
-            self.completed_artifacts.update(fingerprint_set([holdout_boundary]))
-            for round_plan in self.plan["rounds"]:
-                if round_plan["phase"] == "holdout":
+            if not self.holdout_boundary.exists():
+                for round_plan in selection_rounds[len(self.round_results):]:
                     self.mine(round_plan)
-            holdout_predictions = self.screen("holdout")
-            summary = self.evaluate_holdout(selection, holdout_predictions)
-            self.stage = "finalizing"
-            verify_fingerprints(pinned)
-            verify_fingerprints(self.completed_artifacts)
-            pd.DataFrame(self.round_results).to_csv(self.root / "rounds.csv", index=False)
-            write_json_new(self.root / "summary.json", summary)
-            publish_json(self.root / "artifacts.json", artifact_inventory(self.root))
-            self.event({"event": "completed"})
-            # This is the final commit marker. Never announce a successful
-            # status before the event log and result files have been written.
-            publish_json(self.root / "status.json", {"status": "completed"})
+                self.verify_archive("selection")
+                verify_fingerprints(pinned)
+                boundary = self.checkpoints / "selection_closed.json"
+                if not boundary.exists():
+                    publish_json(boundary, self.selection_started_record())
+                    self.completed_artifacts.update(fingerprint_set([boundary]))
+                if selection_predictions is None:
+                    selection_predictions = self.screen("selection")
+                if selection is None:
+                    selection = self.freeze_selection(selection_predictions)
+                verify_fingerprints(pinned)
+                verify_fingerprints(self.completed_artifacts)
+                publish_json(self.holdout_boundary, self.holdout_started_record(selection))
+                self.completed_artifacts.update(fingerprint_set([self.holdout_boundary]))
+            for round_plan in self.plan["rounds"][len(self.round_results):]:
+                self.mine(round_plan)
+            if holdout_predictions is None:
+                holdout_predictions = self.screen("holdout")
+            if summary is None:
+                verify_fingerprints(pinned)
+                summary = self.evaluate_holdout(selection, holdout_predictions)
+            self.finalize(pinned)
             return summary
         except (Exception, KeyboardInterrupt) as exc:
             failure = {"status": "failed", "stage": self.stage, "error": f"{type(exc).__name__}: {exc}"}
@@ -692,7 +798,7 @@ def main() -> None:
     parser.add_argument("--step-timeout", type=float, default=None, help="Optional subprocess timeout in seconds; failures preserve logs")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Validate and print the schedule without creating output or running agents")
-    mode.add_argument("--resume", action="store_true", help="Resume an existing run before the holdout starts")
+    mode.add_argument("--resume", action="store_true", help="Resume an interrupted run from its committed checkpoints")
     args = parser.parse_args()
     try:
         args.input = args.input.resolve(strict=True)

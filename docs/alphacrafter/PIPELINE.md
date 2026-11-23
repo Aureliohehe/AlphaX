@@ -63,7 +63,7 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 output/
   plan.json                  # 日期与移动窗口计划
   manifest.json              # 运行 ID、实验条件指纹、配置、输入/代码及依赖版本
-  checkpoints/               # 初始化清单、选择期 Miner 轮次、Screener 和留出期开始标记
+  checkpoints/               # 初始化清单、两期 Miner 轮次、Screener 和留出期开始标记
   attempts/                  # 显式续跑时归档的上次状态、产物索引和未提交文件
   artifacts.json             # 归档产物列表，路径相对于本次运行目录
   events.jsonl               # 子进程命令、完成事件、冻结顺序、错误
@@ -71,7 +71,8 @@ output/
   miner/YYYY-MM-DD/          # 每轮独立结果与 registry
   snapshots/YYYY-MM-DD.json  # 不可覆盖的快照
   screener_selection/        # Trader 验证期信号和 checkpoint.json
-  screener_holdout/          # 留出期信号
+  screener_holdout/          # 留出期信号和 checkpoint.json
+  holdout_evaluation/        # 一次提交的留出期收益、持仓、轮次、摘要和 checkpoint.json
   trader/
     selection_trial_N.csv    # 最多三个验证组合的逐日账本
     selection.json           # 留出生成前冻结的选择，含信号/快照哈希
@@ -89,15 +90,16 @@ output/
 - 成功状态在结果、产物清单与事件日志写完后才落盘。失败记录会尽可能保存当时已有的产物。读取收益时以 `status.json` 的 `completed` 为准。
 - `--dry-run` 只检查计划及基本配置，不替代真实的候选 AST 校验、数据质量检查或收益评估。
 
-## 续跑选择期
+## 续跑流水线
 
-如果进程在选择期 Miner、Screener 或 Trader 冻结阶段中断或失败，使用原命令、原输出目录和原参数，追加 `--resume`。续跑保留原运行 ID，要求已有相同版本的 `checkpoints/run.json`。程序会校验计划、配置、代码、依赖版本、输入内容和已提交产物的指纹。
+如果进程中断或失败，使用原命令、原输出目录和原参数，追加 `--resume`。续跑保留原运行 ID，要求相同版本的 `checkpoints/run.json`。程序会校验计划、配置、代码、依赖版本、输入和已提交产物的指纹。
 
 - Miner 先在暂存目录执行。核验快照、注册表和标签边界后，再发布产物和轮次检查点。续跑只跳过已有检查点且指纹仍一致的轮次。
-- Screener 的预测、注册表和检查点一同发布。Trader 的试验账本、冻结决定和检查点也一同发布。续跑会复用核验通过的结果，包括无可行策略时的空仓决定。
+- 两期 Screener 的预测、注册表和检查点分别一同发布。Trader 冻结的试验账本与决定也一同发布。留出期开始标记绑定冻结检查点，恢复评估时继续使用这份策略，包括空仓决定。
+- 留出期的收益、持仓、轮次和摘要先作为 `holdout_evaluation/` 一组提交，再发布到原有产物路径。若中断发生在评估提交后，恢复时只核验结果并补齐原有产物路径、索引和完成状态。
 - 未提交的轮次或阶段移到 `attempts/` 下并重新执行。过去的日志继续保留，本次日志写到 `logs/resume-*/`。
 - 运行目录需要支持 POSIX 文件锁和硬链接。子进程仍在使用目录时，另一进程会收到锁冲突。
-- 在留出期启动前会写入 `checkpoints/holdout_started.json`。达到这个边界后需要新开运行。只有中断且使用同一代码版本和检查点格式的运行可续跑。
+- 已完成的运行可直接查阅和归档。要采用不同的代码、配置或数据运行，使用新目录。
 
 ## 查找和归档实验
 
