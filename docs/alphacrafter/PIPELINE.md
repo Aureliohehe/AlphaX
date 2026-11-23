@@ -62,7 +62,8 @@ python3 quant-method/alphacrafter/run_pipeline.py \
 ```text
 output/
   plan.json                  # 日期与移动窗口计划
-  manifest.json              # 参数、输入/候选/代码哈希、环境版本
+  manifest.json              # 运行 ID、实验条件指纹、配置、输入/代码及依赖版本
+  artifacts.json             # 归档产物列表，路径相对于本次运行目录
   events.jsonl               # 子进程命令、完成事件、冻结顺序、错误
   logs/                      # 每个 Miner/Screener 子进程的 stdout/stderr
   miner/YYYY-MM-DD/          # 每轮独立结果与 registry
@@ -83,8 +84,20 @@ output/
 - 计划、manifest、旧快照、旧 registry、已冻结的选择和信号会进行哈希核验；输入和代码也会在关键阶段重新核验。快照目录还必须与已完成计划严格一致，不能插入额外快照或在验证阶段使用未来快照。
 - 输出目录必须新建或为空；已完成或失败的运行都不允许直接覆盖。
 - 不自动恢复失败运行。失败保留日志、计划、已有快照，`status.json` 记下失败阶段；后续阶段不执行。修复后使用新的实验目录。
-- 成功状态在结果与事件日志写完后才落盘。消费结果时必须确认 `status.json` 为 `completed`；磁盘/日志故障时可能无法写状态，但不能仅凭部分产物认定成功。
+- 成功状态在结果、产物清单与事件日志写完后才落盘。失败记录会尽可能保存当时已有的产物。读取收益时以 `status.json` 的 `completed` 为准。
 - `--dry-run` 只检查计划及基本配置，不替代真实的候选 AST 校验、数据质量检查或收益评估。
+
+## 查找和归档实验
+
+```bash
+python quant-method/alphacrafter/list_experiments.py quant-method/machine-learn/data/qlib
+```
+
+该命令以 JSON 列出指定目录中的主流水线运行。可以传入单个运行目录，或扫描包含多次运行的上级目录。每条记录的 `directory` 指向当前运行目录，`artifacts` 中的文件路径相对于它。产物索引和最终状态的位置由 `manifest.json` 的 `records` 字段给出。移动归档目录后可以继续查询。旧版运行通过已有的计划、状态、清单和摘要读取，缺失字段显示为 `null`，缺少有效状态的运行显示为 `unknown`。
+
+- `run_id` 标识一次执行。即使条件相同，重跑也会产生新的 ID。
+- `experiment_fingerprint` 标识规范化配置、输入内容、参与执行的源码和运行环境版本的组合。输入按用途记录，路径和输出目录不参与计算。Git 提交号用于追溯，实际执行的源码通过文件哈希识别，包括工作区中的修改。
+- `data_version` 是特征面板的 SHA-256。日志和清单保留运行当时的来源路径，归档时可按需另存原始输入文件。
 
 ## Trader 执行边界
 

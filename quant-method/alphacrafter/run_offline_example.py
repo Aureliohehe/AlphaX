@@ -40,7 +40,7 @@ def run(output: Path) -> None:
     (output / "README.txt").write_text(
         "SYNTHETIC DATA ONLY. Labels intentionally depend on feature_x.\n"
         "Returns validate software execution, not investment performance.\n"
-        "Inspect pipeline/status.json, manifest.json, logs/ and trader/selection.json.\n"
+        "Inspect status.json, manifest.json, artifacts.json and trader/selection.json under pipeline/.\n"
     )
     day = lambda index: str(dates[index].date())
     subprocess.run([

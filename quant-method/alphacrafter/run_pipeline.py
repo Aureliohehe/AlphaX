@@ -19,6 +19,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 import pandas as pd
 
+from alphax.experiment import artifact_inventory, build_manifest
 from temporal import LABEL_END_COLUMNS, calendar_audit, label_end_source, read_calendar, session_date, snapshot_date
 from trader_lite import (
     TraderConfig, file_fingerprint, is_feasible, load_inputs, parse_configs,
@@ -114,6 +115,21 @@ def verify_fingerprints(fingerprints: Dict[str, object]) -> None:
             raise ValueError(f"Pinned input/code/artifact changed during execution: {name}")
 
 
+def input_paths(args: argparse.Namespace) -> dict[str, Path]:
+    return {name: path for name, path in {
+        "panel": args.input, "calendar": args.calendar, "candidate_file": args.candidate_file,
+    }.items() if path is not None}
+
+
+def normalized_config(args: argparse.Namespace) -> dict:
+    config = {key: value for key, value in vars(args).items()
+              if key not in {"input", "calendar", "candidate_file", "output_dir", "dry_run"}}
+    for key in ("initial_as_of", "train_start", "selection_start", "selection_end", "holdout_start", "holdout_end"):
+        config[key] = iso(config[key])
+    config["configs"] = [asdict(trader_config) for trader_config in parse_configs(args.configs)]
+    return config
+
+
 class Pipeline:
     def __init__(self, args: argparse.Namespace, plan: Dict[str, object]):
         self.args = args
@@ -142,6 +158,7 @@ class Pipeline:
 
     def mine(self, round_plan: Dict[str, object]) -> None:
         cutoff = round_plan["as_of"]
+        self.stage = f"miner_{cutoff}"
         destination = self.root / "miner" / cutoff
         destination.mkdir(parents=True)
         # Miner --registry is read/write. Copy the predecessor into the NEW
@@ -166,7 +183,7 @@ class Pipeline:
             arguments.append("--require-explicit-label-dates")
         if self.args.calendar:
             arguments.extend(["--calendar", self.args.calendar])
-        self.step(f"miner_{cutoff}", "miner_lite.py", arguments)
+        self.step(self.stage, "miner_lite.py", arguments)
         snapshot = self.root / "snapshots" / f"{cutoff}.json"
         payload = json.loads(snapshot.read_text())
         if snapshot_date(payload) != session_date(cutoff):
@@ -205,6 +222,7 @@ class Pipeline:
         verify_fingerprints(self.completed_artifacts)
 
     def screen(self, phase: str) -> Path:
+        self.stage = f"screener_{phase}"
         self.verify_archive(phase)
         window = self.plan[phase]
         output = self.root / f"screener_{phase}"
@@ -217,7 +235,7 @@ class Pipeline:
             arguments.append("--require-explicit-label-dates")
         if self.args.calendar:
             arguments.extend(["--calendar", self.args.calendar])
-        self.step(f"screener_{phase}", "screener_lite.py", arguments)
+        self.step(self.stage, "screener_lite.py", arguments)
         registry = json.loads((output / "registry.json").read_text())
         if registry["library_scope"] != "point_in_time_snapshots":
             raise ValueError("Retrospective predictions cannot enter the pipeline")
@@ -295,26 +313,34 @@ class Pipeline:
             ],
         }
 
-    def run(self) -> Dict[str, object]:
+    def run(self, pinned_inputs: dict | None = None) -> Dict[str, object]:
         if self.root.exists() and (not self.root.is_dir() or any(self.root.iterdir())):
             raise ValueError("Output directory must be new or empty; completed/failed runs are never overwritten")
         self.root.mkdir(parents=True, exist_ok=True)
-        inputs = [self.args.input] + [path for path in (self.args.candidate_file, self.args.calendar) if path]
+        checkout = HERE.parents[1]
+        inputs = input_paths(self.args)
+        if pinned_inputs is None:
+            pinned_inputs = fingerprint_set(list(inputs.values()))
         code = [HERE / name for name in (
             "run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py",
-            "temporal.py", "alphax/factor_dsl.py",
+            "temporal.py", "admission.py", "alphax/__init__.py", "alphax/factor_dsl.py", "alphax/experiment.py",
         )]
         code.append(HERE.parent / "machine-learn/data_contract.py")
-        pinned = fingerprint_set(inputs + code)
+        pinned = {**pinned_inputs, **fingerprint_set(code)}
         parameters = {key: str(value) if isinstance(value, Path) else value for key, value in vars(self.args).items()}
-        write_json_new(self.root / "plan.json", self.plan)
-        write_json_new(self.root / "manifest.json", {
-            "parameters": parameters, "fingerprints": pinned,
-            "runtime": {"python": sys.version, "numpy": np.__version__, "pandas": pd.__version__},
-            "candidate_provenance": "External fixed hypotheses are user-attested, not certified point-in-time" if self.args.candidate_file else "Deterministic template generator",
-        })
-        self.completed_artifacts.update(fingerprint_set([self.root / "plan.json", self.root / "manifest.json"]))
+        manifest = build_manifest(
+            parameters, normalized_config(self.args),
+            {name: pinned_inputs[str(path.resolve())] for name, path in inputs.items()},
+            {path.relative_to(checkout).as_posix(): pinned[str(path.resolve())] for path in code},
+            pinned, self.plan, checkout,
+        )
+        manifest_path = self.root / "manifest.json"
+        # Opening exclusively claims the run directory before any other output.
+        write_json_new(manifest_path, manifest)
         try:
+            plan_path = self.root / "plan.json"
+            write_json_new(plan_path, self.plan)
+            self.completed_artifacts.update(fingerprint_set([plan_path, manifest_path]))
             for round_plan in self.plan["rounds"]:
                 if round_plan["phase"] == "selection":
                     self.mine(round_plan)
@@ -326,10 +352,12 @@ class Pipeline:
                     self.mine(round_plan)
             holdout_predictions = self.screen("holdout")
             summary = self.evaluate_holdout(selection, holdout_predictions)
+            self.stage = "finalizing"
             verify_fingerprints(pinned)
             verify_fingerprints(self.completed_artifacts)
             pd.DataFrame(self.round_results).to_csv(self.root / "rounds.csv", index=False)
             write_json_new(self.root / "summary.json", summary)
+            write_json_new(self.root / "artifacts.json", artifact_inventory(self.root))
             self.event({"event": "completed"})
             # This is the final commit marker. Never announce a successful
             # status before the event log and result files have been written.
@@ -343,6 +371,11 @@ class Pipeline:
                 self.event({"event": "failed", **failure})
             except OSError:
                 pass
+            if not (self.root / "artifacts.json").exists():
+                try:
+                    write_json_new(self.root / "artifacts.json", artifact_inventory(self.root))
+                except OSError:
+                    pass
             if not (self.root / "status.json").exists():
                 try:
                     write_json_new(self.root / "status.json", failure)
@@ -385,11 +418,6 @@ def main() -> None:
             args.candidate_file = args.candidate_file.resolve(strict=True)
         if args.calendar:
             args.calendar = args.calendar.resolve(strict=True)
-        if args.require_explicit_label_dates:
-            columns = pd.read_csv(args.input, nrows=0).columns
-            missing = set(LABEL_END_COLUMNS.values()) - set(columns)
-            if missing:
-                raise ValueError(f"Strict label-date mode requires {sorted(missing)}; rebuild features from raw prices")
         parse_configs(args.configs)
         if not np.isfinite(args.cost_rate) or args.cost_rate < 0:
             raise ValueError("cost-rate must be finite and non-negative")
@@ -405,6 +433,12 @@ def main() -> None:
             raise ValueError("allow-feature-warmup-sessions requires --calendar")
         if args.step_timeout is not None and (not np.isfinite(args.step_timeout) or args.step_timeout <= 0):
             raise ValueError("step-timeout must be finite and positive")
+        pinned_inputs = None if args.dry_run else fingerprint_set(list(input_paths(args).values()))
+        if args.require_explicit_label_dates:
+            columns = pd.read_csv(args.input, nrows=0).columns
+            missing = set(LABEL_END_COLUMNS.values()) - set(columns)
+            if missing:
+                raise ValueError(f"Strict label-date mode requires {sorted(missing)}; rebuild features from raw prices")
         calendar = pd.read_csv(args.input, usecols=["date"], parse_dates=["date"])["date"].drop_duplicates()
         plan = build_plan(calendar, args.initial_as_of, args.train_start, args.selection_start, args.selection_end,
                           args.holdout_start, args.holdout_end, args.maintenance_days, args.admission_sessions, args.min_train_sessions)
@@ -428,7 +462,7 @@ def main() -> None:
         if args.dry_run:
             print(json.dumps(plan, indent=2))
             return
-        summary = Pipeline(args, plan).run()
+        summary = Pipeline(args, plan).run(pinned_inputs)
     except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         parser.exit(1, f"Pipeline failed: {exc}\n")
     print(json.dumps({key: summary[key] for key in ("status", "selected_config", "maintenance_rounds", "holdout")}, indent=2))

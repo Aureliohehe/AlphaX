@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -166,6 +167,8 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertEqual((root / "changed/trader/selection.json").read_text(), selection_text)
             changed_summary = json.loads((root / "changed/summary.json").read_text())
             self.assertNotEqual(changed_summary["holdout"]["cumulative_return"], summary["holdout"]["cumulative_return"])
+            changed_manifest = json.loads((root / "changed/manifest.json").read_text())
+            self.assertNotEqual(changed_manifest["experiment_fingerprint"], manifest["experiment_fingerprint"])
             # Retrying a completed output must not mutate any archived decision.
             original_summary = (root / "out/summary.json").read_text()
             result = run_cli("run_pipeline.py", *args, check=False)
@@ -173,6 +176,46 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertIn("never overwritten", result.stderr)
             self.assertEqual(selection_path.read_text(), selection_text)
             self.assertEqual((root / "out/summary.json").read_text(), original_summary)
+
+    def test_same_experiment_has_distinct_runs_and_portable_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            panel = self.prepare(root, periods=60)
+            window = {"initial": 39, "selection_end": 49, "holdout_end": 59, "interval": 90}
+            run_cli("run_pipeline.py", *self.arguments(root, panel, **window))
+            shutil.copyfile(root / "features.csv", root / "copy.csv")
+            rerun = self.arguments(root, panel, output="rerun", source="copy.csv", **window)
+            run_cli("run_pipeline.py", *rerun, "--configs", "0.80, 0.0,2,2;0.60,0,2,2")
+
+            original = root / "out"
+            archived = root / "archive" / "moved"
+            archived.parent.mkdir()
+            original.rename(archived)
+            first = json.loads((archived / "manifest.json").read_text())
+            second = json.loads((root / "rerun/manifest.json").read_text())
+            self.assertEqual(first["schema_version"], 1)
+            self.assertNotEqual(first["run_id"], second["run_id"])
+            self.assertEqual(first["experiment_fingerprint"], second["experiment_fingerprint"])
+            self.assertEqual(first["config"], second["config"])
+            self.assertEqual(first["config"]["cost_rate"], .0001)
+            for artifact in ("screener_holdout/predictions.csv", "trader/holdout_returns.csv"):
+                self.assertEqual((archived / artifact).read_bytes(), (root / "rerun" / artifact).read_bytes())
+            for key in ("selected_config", "holdout"):
+                self.assertEqual(json.loads((archived / "summary.json").read_text())[key],
+                                 json.loads((root / "rerun/summary.json").read_text())[key])
+
+            runs = json.loads(run_cli("list_experiments.py", root).stdout)
+            self.assertEqual({run["run_id"] for run in runs}, {first["run_id"], second["run_id"]})
+            moved = next(run for run in runs if run["run_id"] == first["run_id"])
+            self.assertEqual(moved["directory"], str(archived))
+            self.assertEqual(moved["status"], "completed")
+            self.assertEqual(moved["data_version"], first["inputs"]["panel"]["sha256"])
+            self.assertEqual(moved["holdout"], first["holdout"])
+            self.assertIsNotNone(moved["metrics"]["cumulative_return"])
+            self.assertTrue({
+                "trader/selection.json", "trader/holdout_returns.csv", "screener_holdout/predictions.csv",
+            }.issubset(moved["artifacts"]))
+            self.assertTrue(all(not Path(path).is_absolute() and (archived / path).is_file() for path in moved["artifacts"]))
 
     def test_empty_library_stays_cash_through_full_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +245,11 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertFalse((root / "out/trader/selection.json").exists())
             self.assertFalse((root / "out/summary.json").exists())
             self.assertFalse((root / "out/screener_holdout").exists())
+            run, = json.loads(run_cli("list_experiments.py", root / "out").stdout)
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(run["failed_stage"], status["stage"])
+            self.assertIn(f"logs/{status['stage']}.log", run["artifacts"])
+            self.assertIsNone(run["metrics"]["cumulative_return"])
 
 
 class TraderMaturityTests(unittest.TestCase):
