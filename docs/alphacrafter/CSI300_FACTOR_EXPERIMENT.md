@@ -61,6 +61,14 @@
   --output-dir quant-method/machine-learn/data/qlib/alphacrafter_csi300_new_run
 ```
 
+新运行的 `manifest.json` 记录运行 ID、实验指纹、原始行情、成分表、日历、固定候选和参考特征文件的指纹。生成的特征面板和冻结候选可通过 `artifacts.json` 的相对路径查找。输入准备失败会保留运行 ID 及失败阶段，实验指纹在清单完成后可用。
+
+```bash
+python quant-method/alphacrafter/list_experiments.py quant-method/machine-learn/data/qlib
+```
+
+列表中 `csi300_factor_research` 的指标是候选数、严格准入数和是否执行留出评估。零候选通过时，运行仍可成功完成，`holdout_evaluated` 为 `false`。
+
 本地产物（Git 忽略）：`machine-learn/data/qlib/alphacrafter_csi300_frozen80_v1/`，`status.json=completed_research`。
 
 - `manifest.json`、`environment.json`、`source_snapshot/`：窗口、输入/代码 SHA-256、运行环境与代码副本。

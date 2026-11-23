@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from alphax.experiment import list_runs
+from alphax.experiment import CSI300_SCOPE, list_runs
 
 
 class ExperimentCatalogTests(unittest.TestCase):
@@ -32,6 +32,7 @@ class ExperimentCatalogTests(unittest.TestCase):
 
             completed, partial = list_runs(root)
             self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["experiment_type"], "pipeline")
             self.assertEqual(completed["data_version"], "legacy-panel-digest")
             self.assertEqual(completed["holdout"], window)
             self.assertEqual(completed["metrics"]["cumulative_return"], 0.1)
@@ -40,3 +41,26 @@ class ExperimentCatalogTests(unittest.TestCase):
             self.assertEqual(partial["status"], "unknown")
             self.assertIsNone(partial["metrics"]["cumulative_return"])
             self.assertEqual((legacy / "manifest.json").read_text(), manifest)
+
+    def test_legacy_csi300_uses_research_metrics_and_original_data_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "manifest.json").write_text(json.dumps({
+                "scope": CSI300_SCOPE,
+                "holdout": ["2022-01-01", "2025-12-31"],
+                "files": {f"/original/{name}": {"sha256": name}
+                          for name in ("daily_pv.h5", "qlib_csi300.txt", "qlib_day.txt")},
+            }))
+            (root / "status.json").write_text('{"status":"completed_research"}')
+            (root / "summary.json").write_text(
+                '{"candidate_count":80,"strict_accepted":[],"holdout_evaluated":false}'
+            )
+            result, = list_runs(root)
+            self.assertEqual(result["experiment_type"], "csi300_factor_research")
+            self.assertEqual(result["status"], "completed")
+            self.assertIsNone(result["run_id"])
+            self.assertTrue(result["data_version"])
+            self.assertEqual(result["holdout"], {"start": "2022-01-01", "end": "2025-12-31"})
+            self.assertEqual(result["metrics"], {
+                "candidate_count": 80, "strict_accepted_count": 0, "holdout_evaluated": False,
+            })

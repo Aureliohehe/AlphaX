@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List archived AlphaX pipeline runs as JSON."""
+"""List archived AlphaX experiment runs as JSON."""
 
 import argparse
 import json
