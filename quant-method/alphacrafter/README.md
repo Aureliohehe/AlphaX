@@ -201,6 +201,21 @@ python3 quant-method/alphacrafter/miner_lite.py \
 
 默认不调用外部模型，使用可复现的模板生成器。API key 只从环境变量读取，不会写入输出文件。因子库现在保存每次再验证的 `validation_history`，注册表保存 `run_history` 和淘汰因子的最后失败指标。
 
+### Miner 长期研究记忆
+
+给已有的 `miner_lite.py` 命令追加 `--memory-db PATH --research-market us --memory-universe STOCK_POOL` 即可启用。每次成功运行会把因子 AST、假设及训练和准入期评估追加到 SQLite，多轮 LLM 搜索还会保存逐折反馈。留出期结果不写入记忆。模板和固定 JSON 运行可以积累证据，LLM 运行会在生成提案前检索并把结果交给 Agent。每个 prompt 默认最多收到 6 条，支持 `--memory-limit` 调整。输出目录的 `memory_recall.json` 保存实际提供给 Agent 的证据 ID、定向分发和本轮写入记录的 ID。
+
+在 `quant-method/alphacrafter` 目录可导入已有搜索的逐折反馈。报告目录须同时包含 `candidates.json` 和 `temporal_audit.json`。导入和后续 Miner 使用相同的股票池标识，标识应包含成分股口径。
+
+```bash
+python -m alphax.miner_memory \
+  --db ../machine-learn/data/qlib/miner-memory.sqlite \
+  --search-feedback /path/to/previous/miner/search_feedback.json \
+  --market us --universe sp500-membership-v1 --data-version SOURCE_PANEL_SHA256
+```
+
+重复导入同一批证据会保留首次入库时间。检索要求市场、股票池、目标和评估口径兼容，因子字段在本轮可用，且证据窗口结束日不晚于本轮训练截止。证据还必须在本轮 `--as-of` 日期之前入库。补录旧报告也使用实际导入时间，因此对旧日期的回放不会读到刚补录的证据。数据库中的历史失败是提案参考，候选准入仍由本轮独立评估决定。
+
 ## 扩展基本面和新闻数据
 
 `build_features.py` 支持可选的 point-in-time CSV 面板，必须包含 `ticker` 和 `available_date`（没有时才使用 `date`）。数据只通过 as-of backward join 合并，不会使用发布日期之后的信息：

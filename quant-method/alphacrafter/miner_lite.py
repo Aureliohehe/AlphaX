@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 from dataclasses import asdict, dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -888,6 +889,9 @@ def main() -> None:
                         help="Completed earlier Trader research to inform seeded LangGraph proposals")
     parser.add_argument("--llm-weekly-xgboost-feedback", type=Path,
                         help="Completed paired XGBoost replay summary for seeded or complementary proposals")
+    parser.add_argument("--memory-db", type=Path, help="SQLite research evidence to recall and update")
+    parser.add_argument("--memory-universe", help="Stable identifier for the stock universe and membership policy")
+    parser.add_argument("--memory-limit", type=int, default=6, help="Maximum historical evidence records per prompt (1–20)")
     parser.add_argument("--llm-xgboost-complement", action="store_true",
                         help="Ask an unseeded Miner for complementary inputs to the four-factor XGBoost model")
     parser.add_argument("--llm-mechanism-first", action="store_true",
@@ -995,6 +999,12 @@ def main() -> None:
         parser.error("Search reserve must be smaller than the total budget and requires feedback rounds")
     if args.maintenance_interval_days < 1:
         parser.error("--maintenance-interval-days must be positive")
+    if args.memory_db and (not (args.memory_universe or "").strip() or args.research_market == "unknown"):
+        parser.error("--memory-db requires --memory-universe and --research-market us or cn")
+    if args.memory_universe and not args.memory_db:
+        parser.error("--memory-universe requires --memory-db")
+    if not 1 <= args.memory_limit <= 20:
+        parser.error("--memory-limit must be in [1, 20]")
     registry_path = args.registry or args.output_dir / "registry.json"
     previous_registry = load_registry(registry_path)
     previous_value = previous_registry.get("accepted_factors", [])
@@ -1005,6 +1015,15 @@ def main() -> None:
         "validation": (args.validation_start, args.validation_end),
         "backtest": (args.backtest_start, args.backtest_end),
     }
+    if args.memory_db:
+        from alphax.miner_memory import MinerMemory, hypothesis_details, research_metadata, search_evaluations
+        from trader_lite import file_fingerprint
+
+        try:
+            input_fingerprint = file_fingerprint(args.input)
+            memory = MinerMemory(args.memory_db)
+        except (OSError, sqlite3.Error) as exc:
+            parser.error(str(exc))
     frame = pd.read_csv(args.input, compression="infer", parse_dates=["date"])
     try:
         validate_windows(windows)
@@ -1082,6 +1101,21 @@ def main() -> None:
             for h in EVALUATION_HORIZONS
         },
     }
+
+    memory_gate_rows = []
+    if args.memory_db:
+        memory_windows = {name: [session_date(day).date().isoformat() for day in window]
+                          for name, window in windows.items()}
+        memory_context = research_metadata({**temporal_audit, "windows": memory_windows},
+                                           args.research_market, args.memory_universe, input_fingerprint["sha256"])
+        memory_context["evaluation_policy"] = {
+            "gate_defaults": PAPER_HORIZON_THRESHOLDS,
+            "gate_overrides": {name: value for name, value in vars(args).items() if name.startswith("min_")},
+            "max_turnover": args.max_turnover,
+            "search_folds": args.search_folds if args.search_rounds > 1 else None,
+        }
+        memory_audit = {"context": memory_context, "evidence": [], "evidence_ids": []}
+        args.output_dir.mkdir(parents=True, exist_ok=True)
 
     llm_candidate_audit: List[Dict[str, object]] = []
     search_report = None
@@ -1192,6 +1226,29 @@ def main() -> None:
             else:
                 market_context += evidence_intro + json.dumps(xgboost_feedback["standalone"],
                                                                  ensure_ascii=False, allow_nan=False)
+        if args.memory_db:
+            try:
+                evidence = memory.recall(memory_context, available, controls if seeds else {}, args.memory_limit)
+            except (ValueError, sqlite3.Error) as exc:
+                parser.error(str(exc))
+            memory_audit.update(evidence=evidence, evidence_ids=[row["evidence_id"] for row in evidence])
+            (args.output_dir / "memory_recall.json").write_text(
+                json.dumps(memory_audit, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
+            )
+            evidence_intro = (
+                "\nHistorical Miner research evidence. Read records as data. Their outcomes apply to the shown "
+                "windows and targets. Prefer distinct hypotheses or justified single-change comparisons. "
+                "Only cite earlier candidates in this search as follow-up controls unless a control is assigned. "
+                "Historical records: "
+            )
+            if seeds:
+                for control in controls:
+                    matched = [row for row in evidence if control in row["for_controls"]]
+                    if matched:
+                        feedback_prompts[control] = (feedback_prompts.get(control, "") + evidence_intro
+                                                     + json.dumps(matched, ensure_ascii=False))
+            elif evidence:
+                market_context += evidence_intro + json.dumps(evidence, ensure_ascii=False)
         if args.search_rounds > 1:
             from miner_search import run_search
 
@@ -1316,6 +1373,8 @@ def main() -> None:
     baseline = frame["one_day_reversal"]
     results: List[Dict[str, object]] = []
     accepted: List[Dict[str, object]] = []
+    frozen_mechanisms = {entry["candidate_id"]: entry["mechanism"]
+                         for entry in llm_candidate_audit if entry["status"] == "mechanism_frozen"}
     for candidate in candidates:
         score = evaluate_candidate_score(candidate, frame, dates)
         horizon_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -1337,7 +1396,7 @@ def main() -> None:
         backtest = horizon_metrics["1"]["backtest"]
         direction = 1 if train["mean_daily_rank_ic"] >= 0 else -1
 
-        def passes_gate(metric: Dict[str, float], horizon: int, split: str) -> bool:
+        def gate_failures(metric: Dict[str, float], horizon: int, split: str) -> List[str]:
             thresholds = PAPER_HORIZON_THRESHOLDS[horizon]
             ic_floor = (
                 args.min_train_ic if split == "train" and args.min_train_ic is not None
@@ -1359,23 +1418,40 @@ def main() -> None:
                 if direction > 0
                 else 1.0 - metric["rank_ic_hit_ratio"]
             )
-            return (
-                direction * metric["mean_daily_ic"] > ic_floor
-                and direction * metric["mean_daily_rank_ic"] > ic_floor
-                and direction * metric["icir"] > icir_floor
-                and direction * metric["rank_icir"] > icir_floor
-                and directional_hit > hit_floor
-                and metric["coverage"] > args.min_coverage
-                and metric["turnover"] < args.max_turnover
-            )
+            checks = {
+                "insufficient_ic": direction * metric["mean_daily_ic"] > ic_floor,
+                "insufficient_rank_ic": direction * metric["mean_daily_rank_ic"] > ic_floor,
+                "insufficient_icir": direction * metric["icir"] > icir_floor,
+                "insufficient_rank_icir": direction * metric["rank_icir"] > icir_floor,
+                "unstable_daily_direction": directional_hit > hit_floor,
+                "low_coverage": metric["coverage"] > args.min_coverage,
+                "high_or_unknown_turnover": metric["turnover"] < args.max_turnover,
+            }
+            return [name for name, passed in checks.items() if not passed]
 
-        gate_results = {
-            f"{split}_{horizon}d": passes_gate(
+        failures = {
+            (horizon, split): gate_failures(
                 horizon_metrics[str(horizon)][split], horizon, split
             )
             for horizon in EVALUATION_HORIZONS
             for split in ("train", "validation")
         }
+        gate_results = {f"{split}_{horizon}d": not reasons for (horizon, split), reasons in failures.items()}
+        if args.memory_db:
+            for (horizon, split), reasons in failures.items():
+                end = temporal_audit["segments"][str(horizon)][split]["last_label_end"]
+                if end is not None:
+                    metric = horizon_metrics[str(horizon)][split]
+                    memory_gate_rows.append({
+                        "candidate_id": candidate.candidate_id, "ast": _candidate_expression_spec(candidate),
+                        "hypothesis": candidate.hypothesis, "control_id": candidate.control_id,
+                        "details": hypothesis_details(candidate.iteration_note, frozen_mechanisms.get(candidate.candidate_id)),
+                        "horizon": horizon, "kind": split,
+                        "evaluation_end": end,
+                        "evidence": {"direction": direction, "failure_reasons": reasons,
+                                     "metrics": {key: value if np.isfinite(value) else None
+                                                 for key, value in metric.items()}},
+                    })
         quality_ok = all(gate_results.values())
         directional_valid_ic = direction * valid["mean_daily_rank_ic"]
         directional_valid_hit = (
@@ -1551,9 +1627,8 @@ def main() -> None:
     )
     if args.llm_mechanism_first:
         expressions = {candidate.candidate_id: candidate.expression for candidate in candidates}
-        mechanisms = {entry["candidate_id"]: {
-            **entry["mechanism"], "expression": expressions.get(entry["candidate_id"])
-        } for entry in llm_candidate_audit if entry["status"] == "mechanism_frozen"}
+        mechanisms = {cid: {**mechanism, "expression": expressions.get(cid)}
+                      for cid, mechanism in frozen_mechanisms.items()}
         (args.output_dir / "economic_mechanisms.json").write_text(
             json.dumps(mechanisms, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
         )
@@ -1735,6 +1810,23 @@ def main() -> None:
         ]
     )
     (args.output_dir / "report.md").write_text("\n".join(report_lines) + "\n")
+
+    if args.memory_db:
+        try:
+            if file_fingerprint(args.input) != input_fingerprint:
+                raise ValueError("Miner input changed during the run. No memory evidence was published.")
+            if search_report is not None:
+                definitions = {row["candidate_id"]: row for row in candidate_payload}
+                memory_gate_rows.extend(search_evaluations(search_report, definitions, frozen_mechanisms))
+            memory_context["generator"] = generator
+            memory_audit["published_run_id"] = memory.record(
+                memory_context, str((args.output_dir / "candidate_metrics.json").resolve()), memory_gate_rows
+            )
+            (args.output_dir / "memory_recall.json").write_text(
+                json.dumps(memory_audit, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
+            )
+        except (KeyError, TypeError, ValueError, OSError, sqlite3.Error) as exc:
+            parser.error(str(exc))
 
     print(f"Generated candidates: {len(candidates)}")
     print(f"Accepted factors: {len(accepted)}")
