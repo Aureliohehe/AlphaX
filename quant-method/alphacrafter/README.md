@@ -216,6 +216,33 @@ python -m alphax.miner_memory \
 
 重复导入同一批证据会保留首次入库时间。检索要求市场、股票池、目标和评估口径兼容，因子字段在本轮可用，且证据窗口结束日不晚于本轮训练截止。证据还必须在本轮 `--as-of` 日期之前入库。补录旧报告也使用实际导入时间，因此对旧日期的回放不会读到刚补录的证据。数据库中的历史失败是提案参考，候选准入仍由本轮独立评估决定。
 
+### XGBoost 因子收益评分
+
+这个独立的 CSI300 研究入口先训练一个共享 XGBoost，再给 Miner 的候选打分。训练标签是候选因子未来 **24 个月年化净收益率**。每期在信号日收盘按因子选前 30 只，下一交易日开盘等权建仓，持有 5 个交易日后按开盘价退出。每期全量进出，费用采用现有 A 股佣金、滑点和卖出印花税口径。缺入场报价的席位留现金，已有持仓缺退出报价则本期未知。两年窗口至少有 90% 的周度收益可观测才生成标签，年化按已观测周数计算。这个固定规则使用历史实际报价，成交能力和净值路径与完整 Trader 有差异。
+
+训练用 2022 年之前已兑现的标签。模型参数固定后，分别在 2022–2023 和 2024–2025 与「按过去两年收益排序」比较。另保存四年区间的已实现收益。四年数据已有历史研究使用，这些结果属于回顾性验证。训练特征只读取预测日以前已兑现收益及候选 AST 的结构。
+
+从仓库根目录训练，使用具备 XGBoost 和 h5py 的研究环境：
+
+```bash
+python quant-method/alphacrafter/factor_return_model.py train \
+  --output-dir quant-method/machine-learn/data/qlib/factor-return-example --export-panel
+```
+
+默认从原始 CSI300 数据构造面板，并使用内建的 120 个研究候选。可用 `--candidate-file` 换成依赖同一面板字段的 Miner 候选。训练输出包括模型及输入指纹、训练标签、两个两年区间的预测与实测、四年汇总。
+
+对一批已生成的候选打分：
+
+```bash
+python quant-method/alphacrafter/miner_lite.py \
+  --factor-return-model quant-method/machine-learn/data/qlib/factor-return-example \
+  --input quant-method/machine-learn/data/qlib/factor-return-example/weekly_labels.csv.gz \
+  --candidate-file /path/to/miner/candidates.json --as-of 2025-12-31 \
+  --output-dir quant-method/machine-learn/data/qlib/factor-return-ranking-example
+```
+
+评分模式输出按预测 24 个月年化净收益率排序的 `ranked_candidates.csv` 和可继续交给 Miner 的 `ranked_candidates.json`。它以指定信号日收盘为信息截止，不运行旧的 IC 准入流程或 Trader。
+
 ## 扩展基本面和新闻数据
 
 `build_features.py` 支持可选的 point-in-time CSV 面板，必须包含 `ticker` 和 `available_date`（没有时才使用 `date`）。数据只通过 as-of backward join 合并，不会使用发布日期之后的信息：

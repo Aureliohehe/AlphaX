@@ -844,6 +844,8 @@ def main() -> None:
         default=base / "data" / "qlib" / "alphacrafter_miner_lite",
     )
     parser.add_argument("--candidate-file", type=Path, default=None)
+    parser.add_argument("--factor-return-model", type=Path,
+                        help="Rank a frozen candidate file by predicted 24-month net return")
     parser.add_argument("--research-market", choices=("us", "cn", "unknown"), default="unknown",
                         help="Market metadata for the separate horizon-specific research pool")
     parser.add_argument(
@@ -979,6 +981,23 @@ def main() -> None:
         help="Maximum train/validation cross-sectional rank turnover (paper threshold: 0.40)",
     )
     args = parser.parse_args()
+    if args.factor_return_model:
+        if not args.candidate_file or not args.as_of:
+            parser.error("--factor-return-model requires --candidate-file and --as-of")
+        if args.llm_model or args.memory_db or args.search_rounds != 1:
+            parser.error("Generate candidates first, then use --factor-return-model to score the frozen list")
+        from factor_return_model import DATA, read_calendar as read_return_calendar, score
+
+        cutoff = session_date(args.as_of) + pd.Timedelta(days=1)
+        options = argparse.Namespace(model_dir=args.factor_return_model, panel=args.input,
+                                     candidate_file=args.candidate_file, output_dir=args.output_dir,
+                                     as_of=cutoff.date().isoformat())
+        try:
+            summary = score(options, read_return_calendar(args.calendar or DATA / "qlib_day.txt"))
+        except (ValueError, KeyError, OSError, ImportError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return
     if min(args.search_rounds, args.search_budget, args.search_batch_size) < 1 or args.search_folds < 2:
         parser.error("Search budgets/rounds must be positive and folds >=2")
     if args.llm_factor_mine_skill_dir and (not args.llm_model or args.candidate_file or args.search_rounds != 1):
