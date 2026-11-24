@@ -129,11 +129,14 @@ class WeeklyEvaluation:
         past = self.window(weekly, pd.Timestamp(cutoff) - pd.DateOffset(months=WINDOW_MONTHS), cutoff)
         return features(candidate, past)
 
-    def weekly(self, candidate):
+    def ranked_rows(self, candidate):
         scores = evaluate_candidate_score(candidate, self.frame)
         rows = self.rows.assign(score=scores.reindex(self.rows.index))
-        rows = rows.loc[np.isfinite(rows.score)].sort_values(["entry", "score", "ticker"],
-                                                           ascending=[True, False, True])
+        return rows.loc[np.isfinite(rows.score)].sort_values(["entry", "score", "ticker"],
+                                                            ascending=[True, False, True])
+
+    def weekly(self, candidate, *, audit=False):
+        rows = self.ranked_rows(candidate)
         selected = rows.groupby("entry", sort=False).head(TOP_K)
         # Each sleeve buys with fees included and liquidates at the scheduled open.
         # Missing entry leaves that sleeve in cash. A held stock without an exit quote
@@ -150,6 +153,17 @@ class WeeklyEvaluation:
         weekly = self.anchors.copy()
         weekly["net"] = (net.groupby(groups).sum() / TOP_K).where(counts.eq(TOP_K) & ~missing_exit)
         weekly["filled_share"] = filled.groupby(groups).sum() / TOP_K
+        if audit:
+            valid_inputs = np.isfinite(self.frame.loc[self.rows.index, list(candidate.features)]).all(axis=1)
+            counts = {
+                "member_rows": self.rows.groupby("entry").size(),
+                "complete_inputs": valid_inputs.groupby(self.rows.entry).sum(),
+                "finite_scores": rows.groupby("entry").size(),
+                "missing_entry_sleeves": (~filled).groupby(groups).sum(),
+                "missing_exit_sleeves": (filled & ~exits).groupby(groups).sum(),
+            }
+            for name, series in counts.items():
+                weekly[name] = series.reindex(weekly.index, fill_value=0).astype(int)
         return weekly
 
     @staticmethod
@@ -203,9 +217,13 @@ def read_candidates(path, frame):
     return candidates
 
 
+def training_origins():
+    return [day for day in pd.date_range("2012-01-01", TRAIN_END, freq="6MS")
+            if day + pd.DateOffset(months=WINDOW_MONTHS) <= pd.Timestamp(TRAIN_END)]
+
+
 def samples(evaluation, candidates):
-    cohorts = [day for day in pd.date_range("2012-01-01", TRAIN_END, freq="6MS")
-               if day + pd.DateOffset(months=WINDOW_MONTHS) <= pd.Timestamp(TRAIN_END)]
+    cohorts = training_origins()
     training, review, full = [], [], []
     for candidate in candidates:
         weekly = evaluation.weekly(candidate)

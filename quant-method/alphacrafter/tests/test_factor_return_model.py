@@ -8,6 +8,7 @@ from cn_portfolio import CNConfig, stamp_duty
 from factor_return_model import (
     ENTRY, ENTRY_OPEN, EXIT, TARGET, TOP_K, WeeklyEvaluation, performance, review_scores, samples,
 )
+from run_factor_return_review import coverage, extra_features
 
 
 class FactorReturnModelTests(unittest.TestCase):
@@ -45,6 +46,33 @@ class FactorReturnModelTests(unittest.TestCase):
         self.panel.loc[self.panel[EXIT].ge(cutoff), TARGET] = -0.99
         after = WeeklyEvaluation(self.panel, self.calendar, cutoff).predict_features(self.candidate, cutoff)
         self.assertEqual(before, after)
+
+    def test_coverage_separates_unpriced_exits_from_cash_entries(self):
+        first_fill = self.calendar[self.calendar.searchsorted("2010-01-01")]
+        signal_pos = self.calendar.get_loc(first_fill) - 1
+        entry_holes = self.panel.date.eq(self.calendar[signal_pos]) & self.panel.x.eq(TOP_K)
+        exit_holes = self.panel.date.eq(self.calendar[signal_pos + 5]) & self.panel.x.eq(TOP_K)
+        score_holes = self.panel.date.eq(self.calendar[signal_pos + 10]) & self.panel.x.ge(2)
+        self.panel.loc[entry_holes, [ENTRY_OPEN, TARGET]] = np.nan
+        self.panel.loc[exit_holes, TARGET] = np.nan
+        self.panel.loc[score_holes, "x"] = np.nan
+        weeks = WeeklyEvaluation(self.panel, self.calendar, "2010-02-01").weekly(self.candidate, audit=True)
+        result = coverage(weeks.iloc[:3])
+        self.assertEqual(result["observed_weeks"], 1)
+        self.assertEqual(result["weeks_with_missing_entry"], 1)
+        self.assertEqual(result["missing_exit_weeks"], 1)
+        self.assertEqual(result["too_few_finite_input_weeks"], 1)
+
+    def test_extended_features_ignore_market_returns_after_cutoff(self):
+        origin = pd.Timestamp("2020-01-01")
+        dates = pd.date_range("2018-01-01", "2020-02-01", freq="W-MON")
+        weeks = pd.DataFrame({"exit": dates + pd.Timedelta(days=7), "net": .01}, index=dates)
+        market = pd.Series(.005, index=dates)
+        before = extra_features(weeks, market, origin)
+        future = weeks.exit.ge(origin)
+        weeks.loc[future, "net"] = -.5
+        market.loc[future] = .5
+        self.assertEqual(before, extra_features(weeks, market, origin))
 
     def test_training_targets_stop_before_review_and_missing_top_scores_stay_visible(self):
         weeks = pd.date_range("2010-01-04", "2025-12-29", freq="W-MON")

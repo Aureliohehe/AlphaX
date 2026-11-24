@@ -243,6 +243,17 @@ python quant-method/alphacrafter/miner_lite.py \
 
 评分模式输出按预测 24 个月年化净收益率排序的 `ranked_candidates.csv` 和可继续交给 Miner 的 `ranked_candidates.json`。它以指定信号日收盘为信息截止，不运行旧的 IC 准入流程或 Trader。
 
+冻结训练覆盖与对照实验可以复用导出的面板和候选文件：
+
+```bash
+python quant-method/alphacrafter/run_factor_return_review.py \
+  --panel quant-method/machine-learn/data/qlib/factor-return-example/weekly_labels.csv.gz \
+  --candidate-file quant-method/machine-learn/data/qlib/factor-return-example/candidates.json \
+  --output-dir quant-method/machine-learn/data/qlib/factor-return-review
+```
+
+工具先写入 `protocol.json`，再逐年和逐预测窗口统计成分覆盖、输入缺失、表达式预热或无定义、缺入场和退出报价。`quote_audit.json` 用原始开盘价和费用逐笔核对预先选定的周度样本。对照采用同一批已冻结候选，比较历史收益排序、原 XGBoost 和加入近期收益及市场状态的 XGBoost。除了全候选回顾，还单列训练中排除了防御风险、回撤及反转因子的结果，比较预测前 10 在过去两个两年窗口的实际净收益。`summary.json` 和 `top10.csv` 保存结果，回顾结果不作为未来验收。
+
 ## 扩展基本面和新闻数据
 
 `build_features.py` 支持可选的 point-in-time CSV 面板，必须包含 `ticker` 和 `available_date`（没有时才使用 `date`）。数据只通过 as-of backward join 合并，不会使用发布日期之后的信息：
