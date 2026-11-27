@@ -1,12 +1,16 @@
 # AlphaX 本地研究工作台
 
-在仓库根目录，用已安装 AlphaX 核心依赖的 Python 启动服务。
+在仓库根目录构建 React 前端，再使用已安装 AlphaX 核心依赖的 Python 启动服务。前端构建需要 Node.js 18 或更新版本。
 
 ```bash
+npm --prefix report/web ci
+npm --prefix report/web run build
 python report/web/server.py
 ```
 
 打开 <http://127.0.0.1:8765>。可用 `--port 8877` 切换端口。服务监听本机地址。因子挖掘需要同一 Python 环境安装 LangGraph，安装方式见 [依赖说明](../../requirements/README.md#可选运行依赖与静态检查)。
+
+开发前端时可运行 `npm --prefix report/web run watch`。在同一 Python 服务地址刷新即可加载最新构建。工作台提供浅色、深色和跟随系统三种主题设置，选项保存在当前浏览器。
 
 ## 研究流程
 

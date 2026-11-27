@@ -202,8 +202,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     settings = None
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
-        "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-        "/research.js": ("research.js", "text/javascript; charset=utf-8"),
+        "/workbench.js": ("workbench.js", "text/javascript; charset=utf-8"),
         "/style.css": ("style.css", "text/css; charset=utf-8"),
     }
 
@@ -231,7 +230,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "请通过本机地址访问。"}, 403)
         if self.path in self.assets:
             name, content_type = self.assets[self.path]
-            return self.send_bytes((STATIC / name).read_bytes(), content_type)
+            try:
+                payload = (STATIC / name).read_bytes()
+            except FileNotFoundError:
+                return self.send_json({"error": "请先在 report/web 运行 npm ci 和 npm run build。"}, 503)
+            return self.send_bytes(payload, content_type)
         if self.path == "/favicon.ico":
             return self.send_bytes(b"", "image/x-icon", 204)
         if self.path == "/api/dashboard":
@@ -297,6 +300,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    if not (STATIC / "workbench.js").is_file():
+        parser.error("Build the React app first: cd report/web && npm ci && npm run build")
     RequestHandler.settings = research.Settings(OUTPUTS / "settings.json")
     with ThreadingHTTPServer(("127.0.0.1", args.port), RequestHandler) as server:
         print(f"AlphaX http://127.0.0.1:{server.server_port}", flush=True)
