@@ -462,7 +462,11 @@ Point-in-time market context: {market_context}
 def request_llm_json(model, messages):
     """Request a JSON response through the configured Miner provider."""
     deepseek_model = model.split("/", 1)[1] if model.startswith("deepseek/") else model
-    if deepseek_model in {"deepseek-chat", "deepseek-reasoner"}:
+    if (compatible_base := os.environ.get("ALPHAX_LLM_API_BASE")):
+        if not (api_key := os.environ.get("ALPHAX_LLM_API_KEY")):
+            raise ValueError("ALPHAX_LLM_API_BASE requires ALPHAX_LLM_API_KEY")
+        content = _compatible_completion(messages, model, compatible_base, api_key)
+    elif deepseek_model in {"deepseek-chat", "deepseek-reasoner"}:
         content = _deepseek_completion(messages, deepseek_model)
     else:
         try:
@@ -542,6 +546,10 @@ def _deepseek_completion(messages: List[Dict[str, str]], model: str) -> str:
     if not api_key:
         raise SystemExit("--llm-model deepseek-chat requires DEEPSEEK_API_KEY")
     base_url = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+    return _compatible_completion(messages, model, base_url, api_key, provider="DeepSeek")
+
+
+def _compatible_completion(messages, model, base_url, api_key, provider="LLM"):
     request_payload = {
         "model": model,
         "messages": messages,
@@ -551,31 +559,29 @@ def _deepseek_completion(messages: List[Dict[str, str]], model: str) -> str:
     if model == "deepseek-chat":
         request_payload["temperature"] = 0.7
     request = Request(
-        f"{base_url}/chat/completions",
+        f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(request_payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
+    request.add_unredirected_header("Authorization", f"Bearer {api_key}")
     try:
         with urlopen(request, timeout=120) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"DeepSeek API returned HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"{provider} API returned HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
-        raise RuntimeError(f"Could not reach DeepSeek API: {exc.reason}") from exc
+        raise RuntimeError(f"Could not reach {provider} API: {exc.reason}") from exc
 
     if "error" in payload:
-        raise RuntimeError(f"DeepSeek API error: {payload['error']}")
+        raise RuntimeError(f"{provider} API error: {payload['error']}")
     try:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("DeepSeek response did not contain message content") from exc
+        raise ValueError(f"{provider} response did not contain message content") from exc
     if not isinstance(content, str):
-        raise ValueError("DeepSeek response content is not text")
+        raise ValueError(f"{provider} response content is not text")
     return content
 
 
@@ -885,6 +891,8 @@ def main() -> None:
         ),
     )
     parser.add_argument("--llm-count", type=int, default=40)
+    parser.add_argument("--research-brief-file", type=Path,
+                        help="UTF-8 research brief for LLM proposals (up to 4000 characters)")
     parser.add_argument("--llm-factor-mine-skill-dir", type=Path,
                         help="Local upstream factor-mine skill checkout, for one LLM proposal round")
     parser.add_argument("--llm-weekly-feedback-dir", type=Path,
@@ -981,6 +989,17 @@ def main() -> None:
         help="Maximum train/validation cross-sectional rank turnover (paper threshold: 0.40)",
     )
     args = parser.parse_args()
+    research_brief = None
+    if args.research_brief_file:
+        if not args.llm_model or args.candidate_file:
+            parser.error("--research-brief-file requires LLM generation")
+        try:
+            research_brief = args.research_brief_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            parser.error(str(exc))
+        if not 1 <= len(research_brief) <= 4000:
+            parser.error("Research brief must contain 1–4000 characters")
+        print("正在加载特征和构建训练窗口", flush=True)
     if args.factor_return_model:
         if not args.candidate_file or not args.as_of:
             parser.error("--factor-return-model requires --candidate-file and --as-of")
@@ -1151,6 +1170,10 @@ def main() -> None:
         if args.llm_agents < 1:
             parser.error("--llm-agents must be positive")
         market_context = build_market_context(frame, train_mask)
+        if research_brief:
+            market_context += "\nResearcher's hypothesis brief (subject to the approved operations and data cutoff): "
+            market_context += json.dumps(research_brief, ensure_ascii=False)
+            print("正在请求 Agent 提出候选因子", flush=True)
         if args.llm_mechanism_first:
             from medium_frequency import FACTOR_SEMANTICS
 
@@ -1280,6 +1303,8 @@ def main() -> None:
                               for h, target in targets.items()}
 
             def propose(count, feedback):
+                if research_brief:
+                    print(f"正在处理训练反馈提案，本批最多 {count} 个候选", flush=True)
                 context = market_context + "\nTraining-only research feedback: " + feedback
                 context += (
                     "\nInclude control_id in each candidate object. For a follow-up set it to a prior "
@@ -1328,6 +1353,8 @@ def main() -> None:
         generator = "template_v1"
     generated_candidates = list(candidates)
     generated_candidate_count = len(candidates)
+    if research_brief:
+        print(f"已生成 {generated_candidate_count} 个候选，正在评估并执行准入检查", flush=True)
     if skill_metadata is not None:
         from factor_mine_skill import note_failure
 
@@ -1394,7 +1421,9 @@ def main() -> None:
     accepted: List[Dict[str, object]] = []
     frozen_mechanisms = {entry["candidate_id"]: entry["mechanism"]
                          for entry in llm_candidate_audit if entry["status"] == "mechanism_frozen"}
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates, start=1):
+        if research_brief:
+            print(f"正在评估候选 {index}/{len(candidates)}", flush=True)
         score = evaluate_candidate_score(candidate, frame, dates)
         horizon_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
         for horizon in EVALUATION_HORIZONS:

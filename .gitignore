@@ -27,6 +27,7 @@ env/
 /quant-method/machine-learn/data/processed/*
 !/quant-method/machine-learn/data/processed/.gitkeep
 /quant-method/machine-learn/data/qlib/
+/report/web/.runs/
 
 # Model artifacts, experiment outputs, logs
 *.pkl
