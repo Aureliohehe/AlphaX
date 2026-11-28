@@ -162,21 +162,27 @@ def combination_research(frame, definitions, score_columns, calendar, first, win
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--miner-dir", type=Path, required=True, help="Completed Miner directory with candidates.json and registry.json")
-    parser.add_argument("--feature-panel", type=Path, help="Date/ticker feature panel for Miner expressions using additional input columns")
-    parser.add_argument("--evaluate-strategies", action="store_true", help="Compare daily/weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
-    parser.add_argument("--factor-strength-rule", choices=("all", "any"), default="all",
+
+    files_args = parser.add_argument_group("Input and output")
+    files_args.add_argument("--miner-dir", type=Path, required=True, help="Completed Miner directory with candidates.json and registry.json")
+    files_args.add_argument("--feature-panel", type=Path, help="Date/ticker feature panel for Miner expressions using additional input columns")
+    files_args.add_argument("--output-dir", type=Path, required=True)
+
+    research_args = parser.add_argument_group("Factor and strategy research")
+    research_args.add_argument("--factor-strength-rule", choices=("all", "any"), default="all",
                         help="Require all or any of Rank IC, Rank ICIR and directional hit rate for single-factor research")
-    parser.add_argument("--compare-weekly-xgboost", action="store_true",
+    research_args.add_argument("--evaluate-strategies", action="store_true", help="Compare daily/weekly/monthly configurations on already-examined 2022–2023; no holdout evaluation")
+
+    xgboost_args = parser.add_argument_group("Weekly XGBoost strategy comparisons")
+    xgboost_args.add_argument("--compare-weekly-xgboost", action="store_true",
                         help="Compare frozen XGBoost and equal-weight scores on the same four weekly factors")
-    parser.add_argument("--compare-weekly-xgboost-additions", action="store_true",
+    xgboost_args.add_argument("--compare-weekly-xgboost-additions", action="store_true",
                         help="Test each LLM factor as a fifth model input and write paired replay evidence")
-    parser.add_argument("--weekly-xgboost-augmentation-weight", type=float, default=1.,
-                        help="Weight of the augmented model rank in paired addition research")
-    parser.add_argument("--weekly-xgboost-augmentation-method",
+    xgboost_args.add_argument("--weekly-xgboost-augmentation-method",
                         choices=("refit", "factor_rank", "residual_rank"), default="refit",
                         help="Use a refitted model, raw factor rank, or rank residual to the core factors")
+    xgboost_args.add_argument("--weekly-xgboost-augmentation-weight", type=float, default=1.,
+                        help="Weight of the augmented model rank in paired addition research")
     args = parser.parse_args()
     compare_xgboost = args.compare_weekly_xgboost or args.compare_weekly_xgboost_additions
     if compare_xgboost and not args.evaluate_strategies:

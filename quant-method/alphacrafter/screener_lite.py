@@ -390,46 +390,56 @@ def ensemble_signal(
 def main() -> None:
     base = Path(__file__).resolve().parents[1] / "machine-learn"
     parser = argparse.ArgumentParser(description="Run the deterministic AlphaCrafter Screener-lite")
-    parser.add_argument(
+
+    files_args = parser.add_argument_group("Input and output")
+    files_args.add_argument(
         "--input", type=Path, default=base / "data" / "processed" / "sp500_features.csv.gz"
     )
-    library_source = parser.add_mutually_exclusive_group()
+    files_args.add_argument(
+        "--output-dir",
+        type=Path,
+        default=base / "data" / "qlib" / "alphacrafter_screener_lite",
+    )
+    files_args.add_argument("--calendar", type=Path, help="Reference session CSV for label horizon validation")
+
+    library_args = parser.add_argument_group("Factor library source")
+    library_source = library_args.add_mutually_exclusive_group()
     library_source.add_argument(
         "--factor-library",
         type=Path,
         default=base / "data" / "qlib" / "alphacrafter_miner_lite" / "factor_library.json",
     )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=base / "data" / "qlib" / "alphacrafter_screener_lite",
-    )
     library_source.add_argument("--library-history", type=Path, help="Directory of write-once Miner snapshots for point-in-time replay")
-    parser.add_argument("--allow-retrospective-library", action="store_true", help="DIAGNOSTIC ONLY: allow a static legacy/future library on all historical dates")
-    parser.add_argument("--as-of", default=None, help="Last visible feature session; defaults to input maximum date")
-    parser.add_argument("--signal-start", default=None, help="First output signal date; earlier feature/IC history is retained")
-    parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy inferred label maturity")
-    parser.add_argument("--calendar", type=Path, help="Reference session CSV for label horizon validation")
-    parser.add_argument("--lookback-days", type=int, default=10)
-    parser.add_argument(
+    library_args.add_argument("--allow-retrospective-library", action="store_true", help="DIAGNOSTIC ONLY: allow a static legacy/future library on all historical dates")
+
+    windows_args = parser.add_argument_group("Signal dates and label policy")
+    windows_args.add_argument("--as-of", default=None, help="Last visible feature session; defaults to input maximum date")
+    windows_args.add_argument("--signal-start", default=None, help="First output signal date; earlier feature/IC history is retained")
+    windows_args.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy inferred label maturity")
+
+    selection_args = parser.add_argument_group("Factor selection")
+    selection_args.add_argument("--lookback-days", type=int, default=10)
+    selection_args.add_argument(
         "--min-suitability",
         type=float,
         default=0.02,
         help="Minimum trailing Rank IC suitability (paper threshold: 0.02)",
     )
-    parser.add_argument("--similarity-threshold", type=float, default=0.80)
-    parser.add_argument("--max-factors", type=int, default=20)
-    parser.add_argument(
+    selection_args.add_argument("--similarity-threshold", type=float, default=0.80)
+    selection_args.add_argument("--max-factors", type=int, default=20)
+
+    llm_args = parser.add_argument_group("Latest-date LLM diagnostics")
+    llm_args.add_argument(
         "--llm-regime-model",
         default=None,
         help="Optional DeepSeek model for one latest-date regime diagnosis",
     )
-    parser.add_argument(
+    llm_args.add_argument(
         "--llm-relevance-model",
         default=None,
         help="Optional DeepSeek model for latest-date factor relevance tool calls",
     )
-    parser.add_argument(
+    llm_args.add_argument(
         "--llm-similarity-model",
         default=None,
         help="Optional DeepSeek model for latest-date factor similarity tool calls",

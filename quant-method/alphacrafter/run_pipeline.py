@@ -773,30 +773,51 @@ class Pipeline:
 def main() -> None:
     base = HERE.parent / "machine-learn"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=base / "data/processed/sp500_features.csv.gz")
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--candidate-file", type=Path, help="Fixed hypotheses decided before selection; no external LLM calls")
-    parser.add_argument("--calendar", type=Path, help="Reference date CSV: require complete feature sessions across the experiment")
-    parser.add_argument("--allow-feature-warmup-sessions", type=int, default=0,
+
+    files_args = parser.add_argument_group("Input and output")
+    files_args.add_argument("--input", type=Path, default=base / "data/processed/sp500_features.csv.gz")
+    files_args.add_argument("--output-dir", type=Path, required=True)
+    files_args.add_argument("--candidate-file", type=Path, help="Fixed hypotheses decided before selection; no external LLM calls")
+    files_args.add_argument("--calendar", type=Path, help="Reference date CSV: require complete feature sessions across the experiment")
+
+    windows_args = parser.add_argument_group("Research windows and data coverage")
+    windows_args.add_argument("--initial-as-of", default="2022-12-30",
+                              help="First factor-library cutoff (default: %(default)s)")
+    windows_args.add_argument("--train-start", default="2016-01-04",
+                              help="First date eligible for training (default: %(default)s)")
+    windows_args.add_argument("--selection-start", default="2023-01-03",
+                              help="First strategy-selection date (default: %(default)s)")
+    windows_args.add_argument("--selection-end", default="2023-12-29",
+                              help="Last strategy-selection date (default: %(default)s)")
+    windows_args.add_argument("--holdout-start", default="2024-01-02",
+                              help="First holdout date for the frozen strategy (default: %(default)s)")
+    windows_args.add_argument("--holdout-end", default="2026-02-27",
+                              help="Last holdout date (default: %(default)s)")
+    windows_args.add_argument("--allow-feature-warmup-sessions", type=int, default=0,
                         help="Explicitly permit at most N missing reference sessions before the first feature date; internal gaps still fail")
-    parser.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy panels without label_end_1d/label_end_5d")
-    parser.add_argument("--initial-as-of", default="2022-12-30")
-    parser.add_argument("--train-start", default="2016-01-04")
-    parser.add_argument("--selection-start", default="2023-01-03")
-    parser.add_argument("--selection-end", default="2023-12-29")
-    parser.add_argument("--holdout-start", default="2024-01-02")
-    parser.add_argument("--holdout-end", default="2026-02-27")
-    parser.add_argument("--maintenance-days", type=int, default=90)
-    parser.add_argument("--admission-sessions", type=int, default=252)
-    parser.add_argument("--min-train-sessions", type=int, default=252)
-    parser.add_argument("--max-pairs", type=int, default=60)
-    parser.add_argument("--max-temporal", type=int, default=20)
-    parser.add_argument("--configs", default=DEFAULT_CONFIGS)
-    parser.add_argument("--cost-rate", type=float, default=.0001)
-    parser.add_argument("--annual-risk-free-rate", type=float, default=.0381)
-    parser.add_argument("--initial-cash", type=float, default=1_000_000.)
-    parser.add_argument("--step-timeout", type=float, default=None, help="Optional subprocess timeout in seconds; failures preserve logs")
-    mode = parser.add_mutually_exclusive_group()
+    windows_args.add_argument("--require-explicit-label-dates", action="store_true", help="Reject legacy panels without label_end_1d/label_end_5d")
+
+    mining_args = parser.add_argument_group("Candidate generation and maintenance")
+    mining_args.add_argument("--maintenance-days", type=int, default=90,
+                             help="Calendar days between maintenance rounds (default: %(default)s)")
+    mining_args.add_argument("--admission-sessions", type=int, default=252,
+                             help="Trading sessions in each admission window (default: %(default)s)")
+    mining_args.add_argument("--min-train-sessions", type=int, default=252,
+                             help="Minimum training trading sessions before admission (default: %(default)s)")
+    mining_args.add_argument("--max-pairs", type=int, default=60)
+    mining_args.add_argument("--max-temporal", type=int, default=20)
+
+    trading_args = parser.add_argument_group("Strategy and transaction costs")
+    trading_args.add_argument("--configs", default=DEFAULT_CONFIGS,
+                              help="Up to three beta,gamma,nlong,nshort configurations, separated by semicolons")
+    trading_args.add_argument("--cost-rate", type=float, default=.0001,
+                              help="Cost rate per traded notional at entry and exit (default: %(default)s)")
+    trading_args.add_argument("--annual-risk-free-rate", type=float, default=.0381)
+    trading_args.add_argument("--initial-cash", type=float, default=1_000_000.)
+
+    execution_args = parser.add_argument_group("Run control")
+    execution_args.add_argument("--step-timeout", type=float, default=None, help="Optional subprocess timeout in seconds; failures preserve logs")
+    mode = execution_args.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Validate and print the schedule without creating output or running agents")
     mode.add_argument("--resume", action="store_true", help="Resume an interrupted run from its committed checkpoints")
     args = parser.parse_args()

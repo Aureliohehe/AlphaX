@@ -405,17 +405,18 @@ def score(args, calendar):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    fit = commands.add_parser("train")
-    rank = commands.add_parser("score")
+    commands = parser.add_subparsers(dest="command", required=True, title="Commands")
+    fit = commands.add_parser("train", help="Fit a shared model on historical factor returns")
+    rank = commands.add_parser("score", help="Rank frozen candidates by predicted 24-month annualized net return")
     for command in (fit, rank):
-        command.add_argument("--output-dir", required=True, type=Path)
-        command.add_argument("--candidate-file", type=Path, required=command is rank)
-        command.add_argument("--panel", type=Path, required=command is rank)
-        command.add_argument("--calendar", type=Path, default=DATA / CSI300_DATA_FILES["calendar"])
-    fit.add_argument("--source", type=Path, default=DATA)
-    fit.add_argument("--export-panel", action="store_true")
-    rank.add_argument("--model-dir", type=Path, required=True)
+        command.add_argument("--output-dir", required=True, type=Path, help="Directory for model or ranking artifacts")
+        command.add_argument("--candidate-file", type=Path, required=command is rank, help="Frozen candidate JSON")
+        command.add_argument("--panel", type=Path, required=command is rank, help="Feature panel with weekly return labels")
+        command.add_argument("--calendar", type=Path, default=DATA / CSI300_DATA_FILES["calendar"],
+                             help="CSI 300 trading-session calendar")
+    fit.add_argument("--source", type=Path, default=DATA, help="Raw CSI 300 input directory")
+    fit.add_argument("--export-panel", action="store_true", help="Export the labelled panel with the model artifacts")
+    rank.add_argument("--model-dir", type=Path, required=True, help="Directory produced by the train command")
     rank.add_argument("--as-of", required=True, help="Exclusive scoring cutoff in YYYY-MM-DD format")
     args = parser.parse_args()
     try:
