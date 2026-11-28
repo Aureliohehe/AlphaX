@@ -17,15 +17,10 @@ from typing import Dict, List, Sequence
 import pandas as pd
 
 from alphax.factor_dsl import Candidate, evaluate_candidate_score
-from miner_lite import (
-    BASELINE_FEATURES,
-    META_COLUMNS,
-    is_feature_column,
-    candidate_from_factor,
-    cross_section_rank,
-    evaluate_score,
-    template_candidates,
-)
+from alphax.miner_candidates import BASELINE_FEATURES, template_candidates
+from alphax.miner_metrics import cross_section_rank, evaluate_score
+from alphax.miner_registry import candidate_from_factor
+from temporal import META_COLUMNS, is_feature_column
 
 
 def train_rank_ic(

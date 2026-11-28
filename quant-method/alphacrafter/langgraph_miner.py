@@ -17,7 +17,7 @@ from typing import Dict, List, Sequence
 from typing_extensions import Annotated, TypedDict
 
 from alphax.factor_dsl import Candidate, candidate_from_dict, validate_candidate
-from miner_lite import MINER_AGENT_ROLES, generate_llm_candidates, request_llm_json
+from alphax.miner_llm import MINER_AGENT_ROLES, generate_llm_candidates, request_llm_json
 
 
 # Filled with langgraph.types.Send when the optional backend is invoked.

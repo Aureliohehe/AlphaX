@@ -7,7 +7,7 @@ import pandas as pd
 
 from medium_frequency import TRADER_HORIZONS, anchor_mask, daily_rank_ic
 from alphax.factor_dsl import evaluate_candidate_score
-from miner_lite import load_candidates
+from alphax.miner_candidates import load_candidates
 from temporal import is_feature_column
 from trader_lite import file_fingerprint
 

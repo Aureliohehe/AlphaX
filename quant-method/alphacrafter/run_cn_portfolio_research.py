@@ -9,8 +9,9 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from cn_portfolio import CNConfig, simulate_cn
+from alphax.experiment import MINER_SOURCE_FILES
 from alphax.factor_dsl import candidate_from_dict, evaluate_candidate_score
+from cn_portfolio import CNConfig, simulate_cn
 from trader_lite import file_fingerprint, is_feasible, select_configuration, summarize
 
 HERE = Path(__file__).resolve().parent
@@ -138,7 +139,7 @@ def main():
 
     sources = [root / "research_pool.json", root / "strategy_validation_plan.json", feature_path,
                source / "daily_pv.h5", source / "qlib_day.txt", Path(__file__), HERE / "cn_portfolio.py",
-               HERE / "miner_lite.py", HERE / "alphax/factor_dsl.py", HERE / "trader_lite.py"]
+               *(HERE / name for name in MINER_SOURCE_FILES), HERE / "alphax/factor_dsl.py", HERE / "trader_lite.py"]
     fingerprints = {str(p): file_fingerprint(p) for p in sources}
     frozen = {"scope": "retrospective_adjusted_unit_A_share_portfolio_proxy_not_live_execution",
               "created_at": datetime.now(timezone.utc).isoformat(), "research_pool": fingerprints[str(root / "research_pool.json")],

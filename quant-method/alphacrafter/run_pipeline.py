@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from alphax.checkpoint import lock_run, publish_json
-from alphax.experiment import artifact_inventory, build_manifest
+from alphax.experiment import MINER_SOURCE_FILES, artifact_inventory, build_manifest
 from temporal import (
     LABEL_END_COLUMNS, calendar_audit, label_end_source, read_calendar, session_date, snapshot_date,
     validate_previous_registry,
@@ -696,7 +696,7 @@ class Pipeline:
         if pinned_inputs is None:
             pinned_inputs = fingerprint_set(list(inputs.values()))
         code = [HERE / name for name in (
-            "run_pipeline.py", "miner_lite.py", "screener_lite.py", "trader_lite.py",
+            "run_pipeline.py", *MINER_SOURCE_FILES, "screener_lite.py", "trader_lite.py",
             "temporal.py", "admission.py", "alphax/__init__.py", "alphax/factor_dsl.py", "alphax/experiment.py",
             "alphax/checkpoint.py",
         )]

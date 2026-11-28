@@ -33,7 +33,7 @@ class LLMIntegrationTests(unittest.TestCase):
                                 "features": [f"feature_{index}"], "hypothesis": "Synthetic mechanism"}])
 
         audit = []
-        with patch("miner_lite.request_llm_json", side_effect=response):
+        with patch("alphax.miner_llm.request_llm_json", side_effect=response):
             result = generate_langgraph_candidates(
                 "offline-model", ["feature_0", "feature_1", "feature_2"],
                 "Offline integration", count=3, agents=3, audit=audit,

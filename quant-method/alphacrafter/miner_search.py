@@ -7,12 +7,10 @@ import numpy as np
 import pandas as pd
 
 from alphax.factor_dsl import Candidate, candidate_expression_spec, evaluate_candidate_score
+from alphax.miner_metrics import PAPER_HORIZON_THRESHOLDS, evaluate_score
 
 
 def rolling_feedback(frame, candidate, available, targets, label_ends, folds=3):
-    # Import lazily so the CLI can reuse the same evaluator without a cycle.
-    from miner_lite import PAPER_HORIZON_THRESHOLDS, evaluate_score
-
     dates = frame["date"]
     sessions = np.sort(dates.unique())
     if folds < 2 or len(sessions) < (folds + 1) * 5:

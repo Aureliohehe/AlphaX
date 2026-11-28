@@ -12,12 +12,15 @@ import pandas as pd
 
 from admission import (HORIZON_RESEARCH_POLICIES, assess_weekly_substitution, build_research_pool,
                        research_failures, strategy_plan)
-from alphax.experiment import CSI300_DATA_FILES, MEDIUM_RECORD, MEDIUM_SCOPE, artifact_inventory, build_manifest
+from alphax.experiment import (
+    CSI300_DATA_FILES, MEDIUM_RECORD, MEDIUM_SCOPE, MINER_SOURCE_FILES, artifact_inventory, build_manifest,
+)
 from alphax.factor_dsl import evaluate_candidate_score
+from alphax.miner_candidates import load_candidates
+from alphax.miner_metrics import evaluate_score, metric_dict
 from cn_portfolio import simulate_cn
 from medium_frequency import (TRADER_HORIZONS, anchor_mask, daily_rank_ic, factor_panel,
                               load_member_bars, screen_signals)
-from miner_lite import evaluate_score, load_candidates, metric_dict
 from run_cn_portfolio_research import load_quotes
 from run_combination_metrics import score_portfolio, top_observations
 from temporal import is_feature_column
@@ -240,7 +243,7 @@ def run(args: argparse.Namespace, source: Path) -> dict:
         checkout = HERE.parents[1]
         code = [HERE / name for name in (
             "run_medium_frequency.py", "medium_frequency.py", "cn_portfolio.py", "admission.py",
-            "miner_lite.py", "trader_lite.py", "trader_harness.py", "run_cn_portfolio_research.py",
+            *MINER_SOURCE_FILES, "trader_lite.py", "trader_harness.py", "run_cn_portfolio_research.py",
             "run_combination_metrics.py", "temporal.py", "weekly_xgboost.py", "alphax/__init__.py",
             "alphax/factor_dsl.py", "alphax/experiment.py",
         )] + [ML / "data_contract.py"]

@@ -11,9 +11,11 @@ from uuid import uuid4
 
 import pandas as pd
 
-from alphax.experiment import CSI300_DATA_FILES, CSI300_RECORD, CSI300_SCOPE, artifact_inventory, build_manifest
+from alphax.experiment import (
+    CSI300_DATA_FILES, CSI300_RECORD, CSI300_SCOPE, MINER_SOURCE_FILES, artifact_inventory, build_manifest,
+)
+from alphax.miner_candidates import BASELINE_FEATURES, load_candidates
 from csi300_data import build_panel
-from miner_lite import BASELINE_FEATURES, load_candidates
 from run_candidate_batch import canonical, failure_reasons, remove_tradable_artifacts
 from trader_lite import file_fingerprint
 from temporal import is_feature_column
@@ -71,7 +73,7 @@ def run(out: Path, source: Path, prior: Path, schema: Path) -> dict:
         }
         checkout = HERE.parents[1]
         code_paths = [HERE / name for name in (
-            "run_csi300_research.py", "csi300_data.py", "miner_lite.py", "run_candidate_batch.py",
+            "run_csi300_research.py", "csi300_data.py", *MINER_SOURCE_FILES, "run_candidate_batch.py",
             "temporal.py", "trader_lite.py", "admission.py", "alphax/__init__.py",
             "alphax/factor_dsl.py", "alphax/experiment.py",
         )] + [ML / "build_features.py", ML / "data_contract.py"]

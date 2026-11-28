@@ -140,7 +140,9 @@ class PipelineIntegrationTests(unittest.TestCase):
             args = self.arguments(root, panel)
             run_cli("run_pipeline.py", *args)
             manifest = json.loads((root / "out/manifest.json").read_text())
-            self.assertTrue(any(path.endswith("/alphax/factor_dsl.py") for path in manifest["fingerprints"]))
+            for module in ("factor_dsl", "miner_candidates", "miner_cli", "miner_llm", "miner_metrics", "miner_registry"):
+                with self.subTest(fingerprinted_module=module):
+                    self.assertTrue(any(path.endswith(f"/alphax/{module}.py") for path in manifest["fingerprints"]))
             selection_path = root / "out/trader/selection.json"
             selection_text = selection_path.read_text()
             frozen = json.loads(selection_text)

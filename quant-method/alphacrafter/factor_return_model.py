@@ -10,14 +10,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from alphax.experiment import CSI300_DATA_FILES, MINER_SOURCE_FILES
 from alphax.factor_dsl import (
     candidate_expression_spec, candidate_from_dict, evaluate_candidate_score,
 )
-from alphax.experiment import CSI300_DATA_FILES
+from alphax.miner_candidates import BASELINE_FEATURES, load_candidates
 from cn_portfolio import CNConfig, stamp_duty
 from csi300_data import member_mask
 from medium_frequency import FACTOR_HYPOTHESES, factor_panel, load_member_bars
-from miner_lite import BASELINE_FEATURES, load_candidates
 from run_cn_portfolio_research import load_quotes
 from temporal import is_feature_column
 from trader_lite import file_fingerprint
@@ -307,7 +307,7 @@ def train(args, calendar):
     inputs = [file_fingerprint(path) for path in paths]
     code = [file_fingerprint(HERE / name) for name in (
         "factor_return_model.py", "medium_frequency.py", "cn_portfolio.py", "csi300_data.py",
-        "miner_lite.py", "alphax/factor_dsl.py", "run_cn_portfolio_research.py",
+        *MINER_SOURCE_FILES, "alphax/factor_dsl.py", "run_cn_portfolio_research.py",
     )]
     frame = (pd.read_csv(args.panel, parse_dates=["date", ENTRY, EXIT]) if args.panel
              else build_csi300_panel(args.source, calendar, END))

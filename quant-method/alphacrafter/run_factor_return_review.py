@@ -241,7 +241,7 @@ def main():
     here = Path(__file__).resolve().parent
     pinned = [file_fingerprint(path) for path in (
         prices, calendar_path, args.panel, args.candidate_file,
-        Path(__file__), here / "factor_return_model.py", here / "alphax/factor_dsl.py",
+        Path(__file__), here / "factor_return_model.py", here / "alphax/factor_dsl.py", here / "alphax/miner_candidates.py",
         here / "run_cn_portfolio_research.py", here / "cn_portfolio.py",
     )]
     args.output_dir.mkdir(parents=True)

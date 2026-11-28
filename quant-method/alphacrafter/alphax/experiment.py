@@ -23,6 +23,14 @@ EXPERIMENT_TYPES = {
     RECORD_TYPE: "pipeline", CSI300_RECORD: "csi300_factor_research", MEDIUM_RECORD: "medium_frequency_research",
 }
 SCHEMA_VERSION = 1
+MINER_SOURCE_FILES = (
+    "miner_lite.py",
+    "alphax/miner_candidates.py",
+    "alphax/miner_cli.py",
+    "alphax/miner_llm.py",
+    "alphax/miner_metrics.py",
+    "alphax/miner_registry.py",
+)
 RUNTIME_PACKAGES = (
     "numpy", "pandas", "scipy", "python-dateutil", "pytz", "six", "typing-extensions", "tzdata",
 )

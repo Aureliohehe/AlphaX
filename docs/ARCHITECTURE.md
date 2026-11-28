@@ -114,7 +114,18 @@ LLM 是候选生成和部分筛选判断的可选组件；默认流程无需调�
 
 S&P 500 主数据仍存在当前成分股快照、历史退出成员及部分数据来源时点的限制。具备时间隔离代码不等于数据本身已经通过 point-in-time 认证。详见 [REPRODUCTION_STATUS.md](alphacrafter/REPRODUCTION_STATUS.md) 与 [DATA_PROVENANCE_AUDIT.md](alphacrafter/DATA_PROVENANCE_AUDIT.md)。
 
-因子 DSL 已抽到共享包 `alphax.factor_dsl`，Miner、Screener 与研究分支共用同一份解析和求值实现。评价指标、CLI、LLM 客户端和注册表维护仍集中在 `miner_lite.py`，部分跨目录依赖通过修改 `sys.path` 实现。后续模块拆分见[工程化规划](ENGINEERING_ROADMAP.md)。
+入口 `miner_lite.py` 负责串联研究流程和写入产物，兼容原有命令和辅助函数导入。共享包中的模块按职责组织：
+
+| 模块 | 职责 |
+|---|---|
+| `alphax.factor_dsl` | 解析和验证表达式，并计算因子值 |
+| `alphax.miner_cli` | 定义命令参数和默认值 |
+| `alphax.miner_candidates` | 生成模板候选，读取和校验候选，计算表达式新颖度 |
+| `alphax.miner_llm` | 构建研究上下文、发送模型请求并校验提案 |
+| `alphax.miner_metrics` | 计算收益标签、跨期指标和准入结果 |
+| `alphax.miner_registry` | 管理因子的保留、复验及淘汰，生成诊断信号 |
+
+主流水线把这些模块的源码纳入实验指纹和续跑校验。时间层与数据契约仍有跨目录依赖，见[工程化规划](ENGINEERING_ROADMAP.md)。
 
 ## 8. 阅读与运行入口
 

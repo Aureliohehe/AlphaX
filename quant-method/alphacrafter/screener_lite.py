@@ -30,17 +30,13 @@ import numpy as np
 import pandas as pd
 
 from alphax.factor_dsl import Candidate, evaluate_candidate_score
+from alphax.miner_candidates import BASELINE_FEATURES
+from alphax.miner_llm import _deepseek_completion, _deepseek_tool_call
+from alphax.miner_metrics import cross_section_rank
+from alphax.miner_registry import candidate_from_factor
 from temporal import (
-    active_factors_at, is_feature_column, label_end_dates, label_end_source, load_timeline, read_calendar, session_date, snapshot_date, visible_panel,
-)
-
-from miner_lite import (
-    BASELINE_FEATURES,
-    META_COLUMNS,
-    _deepseek_completion,
-    _deepseek_tool_call,
-    candidate_from_factor,
-    cross_section_rank,
+    META_COLUMNS, active_factors_at, is_feature_column, label_end_dates, label_end_source,
+    load_timeline, read_calendar, session_date, snapshot_date, visible_panel,
 )
 
 

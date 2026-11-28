@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from alphax.factor_dsl import candidate_from_dict
-from miner_lite import PAPER_HORIZON_THRESHOLDS
+from alphax.miner_metrics import PAPER_HORIZON_THRESHOLDS
 from trader_lite import file_fingerprint
 
 # Coverage and turnover remain unchanged in all policies.
